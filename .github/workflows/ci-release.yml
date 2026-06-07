@@ -1,0 +1,70 @@
+name: CI and Release
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Lint, build, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify dependencies
+        run: go mod tidy
+
+      - name: Lint
+        run: go vet ./...
+
+      - name: Compile
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+  release:
+    name: Build and publish release
+    needs: validate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -o dist/d2r-farmer-linux-amd64 .
+          GOOS=darwin GOARCH=amd64 go build -o dist/d2r-farmer-darwin-amd64 .
+          GOOS=windows GOARCH=amd64 go build -o dist/d2r-farmer-windows-amd64.exe .
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/d2r-farmer-linux-amd64
+            dist/d2r-farmer-darwin-amd64
+            dist/d2r-farmer-windows-amd64.exe
