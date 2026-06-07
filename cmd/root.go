@@ -15,7 +15,7 @@ var rootCmd = &cobra.Command{
 	Short: "Track Progress on your chars and their farming status, mainly on runes",
 	Long: `The main goal of this project is to track what gear you need to farm including different options per gear piece so you know what can be used when.
 	
-	It will try to read out the information from the game itself and show you the program when you let it run (sync) and then shows you what you already have.`,
+It will try to read out the information from the game itself and show you the program when you let it run (sync) and then shows you what you already have.`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
