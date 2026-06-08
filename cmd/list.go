@@ -8,26 +8,20 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list [character]",
-	Short: "List characters or character gear",
-	Long:  "Without args, list all characters. With a character, list gear entries.",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runList,
+	Use:   "list",
+	Short: "List characters",
+	Long:  "List all tracked characters.",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return listCharacters(cmd)
+	},
 }
 
 func init() {
 	rootCmd.AddCommand(listCmd)
-}
-
-func runList(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return listCharacters(cmd)
-	}
-	return listCharacterGear(cmd, args[0])
 }
 
 func listCharacters(cmd *cobra.Command) error {
@@ -60,39 +54,6 @@ func listCharacters(cmd *cobra.Command) error {
 
 	for _, name := range chars {
 		cmd.Println(name)
-	}
-	return nil
-}
-
-func listCharacterGear(cmd *cobra.Command, character string) error {
-	characterFile := filepath.Join("data", "chars", slugifyName(character)+".yaml")
-	content, err := os.ReadFile(characterFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("character does not exist: %s", characterFile)
-		}
-		return fmt.Errorf("read character file: %w", err)
-	}
-
-	var data map[string]any
-	if err := yaml.Unmarshal(content, &data); err != nil {
-		return fmt.Errorf("parse character file: %w", err)
-	}
-
-	gear := coerceGearEntries(data["gear"])
-	if len(gear) == 0 {
-		cmd.Printf("no gear for %q\n", character)
-		return nil
-	}
-
-	for i, entry := range gear {
-		exact := strings.TrimSpace(fmt.Sprint(entry["exact_name"]))
-		if exact == "" || exact == "<nil>" {
-			exact = strings.TrimSpace(fmt.Sprint(entry["query"]))
-		}
-		slot := strings.TrimSpace(fmt.Sprint(entry["slot"]))
-		kind := strings.TrimSpace(fmt.Sprint(entry["kind"]))
-		cmd.Printf("%d. %s (%s, %s)\n", i+1, exact, slot, kind)
 	}
 	return nil
 }

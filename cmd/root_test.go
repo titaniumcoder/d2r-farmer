@@ -31,6 +31,30 @@ func TestRootCommandHasCoreSubcommands(t *testing.T) {
 		t.Fatalf("expected list command to exist, got err=%v", err)
 	}
 
+	if cmd, _, err := rootCmd.Find([]string{"info"}); err != nil || cmd == nil {
+		t.Fatalf("expected info command to exist, got err=%v", err)
+	}
+
+	if cmd, _, err := rootCmd.Find([]string{"found"}); err != nil || cmd == nil {
+		t.Fatalf("expected found command to exist, got err=%v", err)
+	}
+
+	if cmd, _, err := rootCmd.Find([]string{"remove"}); err != nil || cmd == nil {
+		t.Fatalf("expected remove command to exist, got err=%v", err)
+	}
+
+	if cmd, _, err := rootCmd.Find([]string{"bases"}); err != nil || cmd == nil {
+		t.Fatalf("expected bases command to exist, got err=%v", err)
+	}
+
+	if cmd, _, err := rootCmd.Find([]string{"runes"}); err != nil || cmd == nil {
+		t.Fatalf("expected runes command to exist, got err=%v", err)
+	}
+
+	if cmd, _, err := rootCmd.Find([]string{"import"}); err != nil || cmd == nil {
+		t.Fatalf("expected import command to exist, got err=%v", err)
+	}
+
 	if cmd, _, err := rootCmd.Find([]string{"list-models"}); err != nil || cmd == nil {
 		t.Fatalf("expected list-models command to exist, got err=%v", err)
 	}

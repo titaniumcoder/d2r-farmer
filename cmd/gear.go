@@ -2,12 +2,20 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+)
+
+var (
+	gearWeaponSwap bool
+	gearSlotWeapon bool
+	gearSlotHead   bool
+	gearSlotArmor  bool
+	gearSlotBelt   bool
+	gearSlotRing   bool
+	gearSlotAmulet bool
+	gearSlotInv    bool
 )
 
 var gearCmd = &cobra.Command{
@@ -20,6 +28,14 @@ var gearCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(gearCmd)
+	gearCmd.Flags().BoolVar(&gearWeaponSwap, "weapon-swap", false, "Mark this gear as a weapon-swap item")
+	gearCmd.Flags().BoolVar(&gearSlotWeapon, "weapon", false, "Force slot to weapon")
+	gearCmd.Flags().BoolVar(&gearSlotHead, "head", false, "Force slot to head")
+	gearCmd.Flags().BoolVar(&gearSlotArmor, "armor", false, "Force slot to armor")
+	gearCmd.Flags().BoolVar(&gearSlotBelt, "belt", false, "Force slot to belt")
+	gearCmd.Flags().BoolVar(&gearSlotRing, "ring", false, "Force slot to ring")
+	gearCmd.Flags().BoolVar(&gearSlotAmulet, "amulet", false, "Force slot to amulet")
+	gearCmd.Flags().BoolVar(&gearSlotInv, "inventory", false, "Force slot to inventory")
 }
 
 func addGear(cmd *cobra.Command, args []string) error {
@@ -33,25 +49,13 @@ func addGear(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("gear cannot be empty")
 	}
 
-	characterFile := filepath.Join("data", "chars", slugifyName(character)+".yaml")
-	content, err := os.ReadFile(characterFile)
+	data, err := readCharacterData(character)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("character does not exist: %s", characterFile)
-		}
-		return fmt.Errorf("read character file: %w", err)
+		return err
 	}
 
-	var data map[string]any
-	if err := yaml.Unmarshal(content, &data); err != nil {
-		return fmt.Errorf("parse character file: %w", err)
-	}
-	if data == nil {
-		data = map[string]any{}
-	}
-
-	charClass := strings.TrimSpace(fmt.Sprint(data["class"]))
-	if charClass == "" || charClass == "<nil>" {
+	charClass := stringValue(data["class"])
+	if charClass == "" {
 		return fmt.Errorf("character %q has no class set", character)
 	}
 
@@ -60,7 +64,15 @@ func addGear(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	entry, err := resolveGearWithLLM(gear, charClass, cfg)
+	slotOverride, err := selectedGearSlot()
+	if err != nil {
+		return err
+	}
+	if gearWeaponSwap && slotOverride != "" && slotOverride != "weapon" {
+		return fmt.Errorf("--weapon-swap can only be combined with --weapon")
+	}
+
+	entry, err := resolveGearWithLLM(gear, charClass, slotOverride, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve gear details: %w", err)
 	}
@@ -72,51 +84,30 @@ func addGear(cmd *cobra.Command, args []string) error {
 		entry["query"] = gear
 	}
 
-	gearList := coerceGearEntries(data["gear"])
-	data["gear"] = append(gearList, entry)
-
-	updated, err := yaml.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("marshal character file: %w", err)
+	entry["slot"] = normalizeSlotName(stringValue(entry["slot"]))
+	if slotOverride != "" {
+		entry["slot"] = slotOverride
 	}
 
-	if err := os.WriteFile(characterFile, updated, 0o644); err != nil {
-		return fmt.Errorf("write character file: %w", err)
+	if gearWeaponSwap {
+		swapRole := normalizeSwapRole(stringValue(entry["swap_role"]))
+		entry["slot"] = "weapon"
+		entry["weapon_swap"] = true
+		entry["swap_role"] = swapRole
+	} else {
+		entry["weapon_swap"] = false
+	}
+
+	gearList := coerceGearEntries(data["gear"])
+	gearList = append(gearList, entry)
+	setGearEntries(data, gearList)
+
+	if err := writeCharacterData(character, data); err != nil {
+		return err
 	}
 
 	cmd.Printf("added %q to %q\n", gear, character)
 	return nil
-}
-
-func coerceGearEntries(v any) []map[string]any {
-	if v == nil {
-		return []map[string]any{}
-	}
-
-	switch items := v.(type) {
-	case []map[string]any:
-		return append([]map[string]any{}, items...)
-	case []any:
-		out := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			if entry, ok := normalizeEntryMap(item); ok {
-				out = append(out, entry)
-				continue
-			}
-
-			text := strings.TrimSpace(fmt.Sprint(item))
-			if text != "" {
-				out = append(out, map[string]any{"exact_name": text, "query": text})
-			}
-		}
-		return out
-	default:
-		text := strings.TrimSpace(fmt.Sprint(v))
-		if text == "" {
-			return []map[string]any{}
-		}
-		return []map[string]any{{"exact_name": text, "query": text}}
-	}
 }
 
 func normalizeEntryMap(v any) (map[string]any, bool) {
@@ -141,4 +132,45 @@ func normalizeEntryMap(v any) (map[string]any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func normalizeSwapRole(role string) string {
+	value := strings.ToLower(strings.TrimSpace(role))
+	if value == "offhand" {
+		return "offhand"
+	}
+	return "main"
+}
+
+func selectedGearSlot() (string, error) {
+	selected := make([]string, 0, 7)
+	if gearSlotWeapon {
+		selected = append(selected, "weapon")
+	}
+	if gearSlotHead {
+		selected = append(selected, "head")
+	}
+	if gearSlotArmor {
+		selected = append(selected, "armor")
+	}
+	if gearSlotBelt {
+		selected = append(selected, "belt")
+	}
+	if gearSlotRing {
+		selected = append(selected, "ring")
+	}
+	if gearSlotAmulet {
+		selected = append(selected, "amulet")
+	}
+	if gearSlotInv {
+		selected = append(selected, "inventory")
+	}
+
+	if len(selected) > 1 {
+		return "", fmt.Errorf("only one slot flag can be set")
+	}
+	if len(selected) == 0 {
+		return "", nil
+	}
+	return selected[0], nil
 }
