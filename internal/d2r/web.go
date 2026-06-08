@@ -28,6 +28,8 @@ type webCharacter struct {
 type webRuneNeed struct {
 	Name         string
 	Count        int
+	Owned        int
+	Complete     bool
 	CountessText string
 }
 
@@ -37,13 +39,17 @@ type webSection struct {
 }
 
 type webGearItem struct {
-	Key    string
-	Status gearStatus
+	Key               string
+	Status            gearStatus
+	RunewordBuildable bool
+	RunewordMissing   bool
 }
 
 type webPageData struct {
 	Characters []webCharacter
 	Error      string
+	ActiveSlug string
+	Detail     *webDetailData
 }
 
 type webDetailData struct {
@@ -248,12 +254,14 @@ func cancelImportJob(character string) bool {
 }
 
 func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.Trim(r.URL.Path, "/")
+	if strings.Contains(path, "/") {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -263,8 +271,41 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data := webPageData{Characters: chars}
+	if path != "" {
+		detail, err := buildCharacterDetailData(path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		if snap, ok := getImportSnapshot(path); ok {
+			detail.ImportRunning = snap.Running
+			detail.ImportCancel = snap.Cancel
+			detail.ImportURL = snap.URL
+			detail.ImportCurrent = snap.Current
+			detail.ImportTotal = snap.Total
+			detail.ImportItem = snap.Item
+			detail.ImportAdded = snap.Added
+			detail.ImportSkipped = snap.Skipped
+			if detail.Error == "" {
+				detail.Error = snap.ErrMsg
+			}
+			if detail.Notice == "" {
+				detail.Notice = snap.Notice
+			}
+		} else {
+			importJobsMu.Lock()
+			detail.ImportURL = importURLs[path]
+			importJobsMu.Unlock()
+		}
+
+		data.ActiveSlug = path
+		data.Detail = &detail
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = s.templates.ExecuteTemplate(w, "index", webPageData{Characters: chars})
+	_ = s.templates.ExecuteTemplate(w, "index", data)
 }
 
 func (s *webServer) handleWelcome(w http.ResponseWriter, r *http.Request) {
@@ -330,8 +371,8 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		}
 
 		item := strings.TrimSpace(r.FormValue("item"))
-		weaponSwap := r.FormValue("weapon_swap") == "on"
-		err := addGearFromWeb(slug, item, weaponSwap)
+		slot := strings.TrimSpace(r.FormValue("slot"))
+		err := addGearFromWeb(slug, item, slot)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			s.renderCharacterDetail(w, slug, err.Error(), "")
@@ -405,6 +446,21 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "move-hand" && r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		key := strings.TrimSpace(r.FormValue("key"))
+		if err := toggleHandFromWeb(slug, key); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			s.renderCharacterDetail(w, slug, err.Error(), "")
+			return
+		}
+		s.renderCharacterDetail(w, slug, "", "")
+		return
+	}
+
 	if len(parts) == 2 && parts[1] == "remove" && r.Method == http.MethodPost {
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid form", http.StatusBadRequest)
@@ -432,6 +488,48 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 			s.renderCharacterDetail(w, slug, err.Error(), "")
 			return
 		}
+		s.renderCharacterDetail(w, slug, "", "")
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "runes" && r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		runeName := canonicalRuneName(r.FormValue("rune"))
+		deltaText := strings.TrimSpace(r.FormValue("delta"))
+		delta, err := strconv.Atoi(deltaText)
+		if err != nil || (delta != 1 && delta != -1) {
+			w.WriteHeader(http.StatusBadRequest)
+			s.renderCharacterDetail(w, slug, "invalid rune counter delta", "")
+			return
+		}
+
+		if err := adjustRuneOwnedFromWeb(slug, runeName, delta); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			s.renderCharacterDetail(w, slug, err.Error(), "")
+			return
+		}
+
+		s.renderCharacterDetail(w, slug, "", "")
+		return
+	}
+
+	if len(parts) == 3 && parts[1] == "base" && parts[2] == "remove" && r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+
+		key := strings.TrimSpace(r.FormValue("key"))
+		baseName := strings.TrimSpace(r.FormValue("base"))
+		if err := removeBaseFromWeb(slug, key, baseName); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			s.renderCharacterDetail(w, slug, err.Error(), "")
+			return
+		}
+
 		s.renderCharacterDetail(w, slug, "", "")
 		return
 	}
@@ -558,12 +656,22 @@ func createCharacterFromWeb(name string, className string) error {
 	return nil
 }
 
-func addGearFromWeb(character string, gear string, weaponSwap bool) error {
+func addGearFromWeb(character string, gear string, selectedSlot string) error {
 	if character == "" {
 		return fmt.Errorf("character cannot be empty")
 	}
 	if gear == "" {
 		return fmt.Errorf("gear cannot be empty")
+	}
+
+	slotHint, err := normalizeSelectedSlotHint(selectedSlot)
+	if err != nil {
+		return err
+	}
+
+	llmSlotHint := slotHint
+	if slotHint == "weapon_swap" || slotHint == "weapon_swap_offhand" {
+		llmSlotHint = "weapon"
 	}
 
 	data, err := readCharacterData(character)
@@ -581,7 +689,7 @@ func addGearFromWeb(character string, gear string, weaponSwap bool) error {
 		return err
 	}
 
-	entry, err := resolveGearWithLLM(gear, charClass, "", cfg)
+	entry, err := resolveGearWithLLM(gear, charClass, llmSlotHint, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve gear details: %w", err)
 	}
@@ -593,14 +701,27 @@ func addGearFromWeb(character string, gear string, weaponSwap bool) error {
 		entry["query"] = gear
 	}
 
-	entry["slot"] = normalizeSlotName(stringValue(entry["slot"]))
-	if weaponSwap {
-		swapRole := normalizeSwapRole(stringValue(entry["swap_role"]))
-		entry["slot"] = "weapon"
-		entry["weapon_swap"] = true
-		entry["swap_role"] = swapRole
-	} else {
-		entry["weapon_swap"] = false
+	normalizeResolvedSlotAndRole(entry)
+	entry["weapon_swap"] = false
+	if slotHint != "" {
+		switch slotHint {
+		case "weapon_swap":
+			entry["slot"] = "weapon"
+			entry["weapon_swap"] = true
+			entry["swap_role"] = "main"
+		case "weapon_swap_offhand":
+			entry["slot"] = "weapon"
+			entry["weapon_swap"] = true
+			entry["swap_role"] = "offhand"
+		case "offhand":
+			entry["slot"] = "weapon"
+			entry["swap_role"] = "offhand"
+		case "weapon":
+			entry["slot"] = "weapon"
+			entry["swap_role"] = "main"
+		default:
+			entry["slot"] = normalizeSlotName(slotHint)
+		}
 	}
 
 	gearList := coerceGearEntries(data["gear"])
@@ -612,6 +733,18 @@ func addGearFromWeb(character string, gear string, weaponSwap bool) error {
 	}
 
 	return nil
+}
+
+func normalizeSelectedSlotHint(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", "automatic", "auto":
+		return "", nil
+	case "weapon", "offhand", "weapon_swap", "weapon_swap_offhand", "head", "armor", "belt", "ring", "amulet", "inventory":
+		return value, nil
+	default:
+		return "", fmt.Errorf("invalid slot selection")
+	}
 }
 
 func parseGearKey(key string, length int) (int, error) {
@@ -642,6 +775,32 @@ func toggleKnownFromWeb(character string, key string) error {
 		delete(gearList[idx], "found_at")
 	} else {
 		gearList[idx]["found"] = true
+	}
+
+	setGearEntries(data, gearList)
+	return writeCharacterData(character, data)
+}
+
+func toggleHandFromWeb(character string, key string) error {
+	data, err := readCharacterData(character)
+	if err != nil {
+		return err
+	}
+
+	gearList := coerceGearEntries(data["gear"])
+	idx, err := parseGearKey(key, len(gearList))
+	if err != nil {
+		return err
+	}
+
+	if slotForEntry(gearList[idx]) != "weapon" {
+		return fmt.Errorf("hand can only be changed for weapon items")
+	}
+
+	if normalizeSwapRole(stringValue(gearList[idx]["swap_role"])) == "offhand" {
+		gearList[idx]["swap_role"] = "main"
+	} else {
+		gearList[idx]["swap_role"] = "offhand"
 	}
 
 	setGearEntries(data, gearList)
@@ -708,6 +867,156 @@ func reorderGearFromWeb(character string, sourceKey string, targetKey string) er
 	return writeCharacterData(character, data)
 }
 
+func adjustRuneOwnedFromWeb(character string, runeName string, delta int) error {
+	if character == "" {
+		return fmt.Errorf("character cannot be empty")
+	}
+	if runeName == "" {
+		return fmt.Errorf("rune cannot be empty")
+	}
+	if delta != 1 && delta != -1 {
+		return fmt.Errorf("delta must be +1 or -1")
+	}
+
+	data, err := readCharacterData(character)
+	if err != nil {
+		return err
+	}
+
+	owned := readRuneOwnedCounts(data)
+	next := owned[runeName] + delta
+	if next < 0 {
+		next = 0
+	}
+	if next == 0 {
+		delete(owned, runeName)
+	} else {
+		owned[runeName] = next
+	}
+	writeRuneOwnedCounts(data, owned)
+
+	return writeCharacterData(character, data)
+}
+
+func removeBaseFromWeb(character string, key string, baseName string) error {
+	if character == "" {
+		return fmt.Errorf("character cannot be empty")
+	}
+	if baseName == "" {
+		return fmt.Errorf("base cannot be empty")
+	}
+
+	data, err := readCharacterData(character)
+	if err != nil {
+		return err
+	}
+
+	gearList := coerceGearEntries(data["gear"])
+	idx, err := parseGearKey(key, len(gearList))
+	if err != nil {
+		return err
+	}
+
+	match := normalizeGearLookup(baseName)
+	if match == "" {
+		return fmt.Errorf("base cannot be empty")
+	}
+
+	bases := stringSliceValue(gearList[idx]["possible_bases"])
+	filteredBases := make([]string, 0, len(bases))
+	for _, candidate := range bases {
+		if normalizeGearLookup(candidate) == match {
+			continue
+		}
+		filteredBases = append(filteredBases, candidate)
+	}
+	gearList[idx]["possible_bases"] = filteredBases
+
+	rawDetails, hasDetails := gearList[idx]["possible_bases_details"]
+	if hasDetails {
+		switch typed := rawDetails.(type) {
+		case []any:
+			filtered := make([]any, 0, len(typed))
+			for _, item := range typed {
+				entry, ok := normalizeEntryMap(item)
+				if !ok {
+					continue
+				}
+				if normalizeGearLookup(stringValue(entry["name"])) == match {
+					continue
+				}
+				filtered = append(filtered, entry)
+			}
+			gearList[idx]["possible_bases_details"] = filtered
+		}
+	}
+
+	setGearEntries(data, gearList)
+	return writeCharacterData(character, data)
+}
+
+func readRuneOwnedCounts(data map[string]any) map[string]int {
+	owned := map[string]int{}
+	raw, ok := data["runes_owned"]
+	if !ok || raw == nil {
+		return owned
+	}
+
+	entries, ok := raw.(map[string]any)
+	if !ok {
+		return owned
+	}
+
+	for key, value := range entries {
+		runeName := canonicalRuneName(key)
+		if runeName == "" {
+			continue
+		}
+
+		count := 0
+		switch typed := value.(type) {
+		case int:
+			count = typed
+		case int64:
+			count = int(typed)
+		case float64:
+			count = int(typed)
+		default:
+			parsed, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(value)))
+			if err != nil {
+				continue
+			}
+			count = parsed
+		}
+
+		if count > 0 {
+			owned[runeName] = count
+		}
+	}
+
+	return owned
+}
+
+func writeRuneOwnedCounts(data map[string]any, owned map[string]int) {
+	if len(owned) == 0 {
+		delete(data, "runes_owned")
+		return
+	}
+
+	out := map[string]any{}
+	for runeName, count := range owned {
+		if count > 0 {
+			out[runeName] = count
+		}
+	}
+	if len(out) == 0 {
+		delete(data, "runes_owned")
+		return
+	}
+
+	data["runes_owned"] = out
+}
+
 func buildCharacterDetailData(slug string) (webDetailData, error) {
 	data, err := readCharacterData(slug)
 	if err != nil {
@@ -721,12 +1030,16 @@ func buildCharacterDetailData(slug string) (webDetailData, error) {
 
 	sections := make([]webSection, 0)
 	gearList := coerceGearEntries(data["gear"])
+	runeOwned := readRuneOwnedCounts(data)
 	statuses := buildGearStatuses(gearList)
 	allItems := make([]webGearItem, 0, len(statuses))
 	for idx, status := range statuses {
+		buildable, missing := runewordCraftStatus(status, runeOwned)
 		allItems = append(allItems, webGearItem{
-			Key:    strconv.Itoa(idx),
-			Status: status,
+			Key:               strconv.Itoa(idx),
+			Status:            status,
+			RunewordBuildable: buildable,
+			RunewordMissing:   missing,
 		})
 	}
 
@@ -773,9 +1086,37 @@ func filterWebItems(items []webGearItem, keep func(gearStatus) bool) []webGearIt
 	return out
 }
 
+func runewordCraftStatus(status gearStatus, owned map[string]int) (bool, bool) {
+	if strings.ToLower(status.Kind) != "runeword" {
+		return false, false
+	}
+
+	need := map[string]int{}
+	for _, runeName := range status.Runes {
+		canonical := canonicalRuneName(runeName)
+		if canonical == "" {
+			continue
+		}
+		need[canonical]++
+	}
+
+	if len(need) == 0 {
+		return false, true
+	}
+
+	for runeName, count := range need {
+		if owned[runeName] < count {
+			return false, true
+		}
+	}
+
+	return true, false
+}
+
 func buildRuneNeeds(data map[string]any) []webRuneNeed {
 	gearList := coerceGearEntries(data["gear"])
 	counts := map[string]int{}
+	owned := readRuneOwnedCounts(data)
 	order := make([]string, 0)
 
 	for _, entry := range gearList {
@@ -808,10 +1149,17 @@ func buildRuneNeeds(data map[string]any) []webRuneNeed {
 	for _, runeName := range order {
 		count := counts[runeName]
 		countess := countessDifficultiesForRune(runeName)
+		minDifficulty := ""
+		if len(countess) > 0 {
+			minDifficulty = countess[0]
+		}
+		ownedCount := owned[runeName]
 		out = append(out, webRuneNeed{
 			Name:         runeName,
 			Count:        count,
-			CountessText: strings.Join(countess, ", "),
+			Owned:        ownedCount,
+			Complete:     ownedCount >= count,
+			CountessText: minDifficulty,
 		})
 	}
 

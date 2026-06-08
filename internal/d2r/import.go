@@ -142,7 +142,10 @@ func importGuideForCharacter(character string, url string, progressf func(string
 		if slotHint != "" {
 			entry["slot"] = slotHint
 		} else {
-			entry["slot"] = normalizeSlotName(stringValue(entry["slot"]))
+			normalizeResolvedSlotAndRole(entry)
+		}
+		if !weaponSwap && slotHint == "weapon" && normalizeSwapRole(swapRole) == "offhand" {
+			entry["swap_role"] = "offhand"
 		}
 		if weaponSwap {
 			entry["weapon_swap"] = true
@@ -202,7 +205,10 @@ func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string) {
 		}
 		return "weapon", true, "main"
 	}
-	if strings.Contains(value, "weapon") || strings.Contains(value, "off-hand") || strings.Contains(value, "off hand") {
+	if strings.Contains(value, "off-hand") || strings.Contains(value, "off hand") {
+		return "weapon", false, "offhand"
+	}
+	if strings.Contains(value, "weapon") {
 		return "weapon", false, "main"
 	}
 	if strings.Contains(value, "helmet") || strings.Contains(value, "helm") {

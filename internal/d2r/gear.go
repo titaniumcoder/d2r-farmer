@@ -25,12 +25,22 @@ type gearStatus struct {
 	SwapRole  string
 	Runes     []string
 	Bases     []string
+	BaseInfo  []gearBaseInfo
 	BestBases []string
 	Effects   []string
 	IsSwap    bool
 	Known     bool
 	Needed    bool
 	Prio      bool
+}
+
+type gearBaseInfo struct {
+	Name        string
+	BaseClass   string
+	Hand        string
+	Defense     string
+	Damage      string
+	WeaponSpeed string
 }
 
 // --- layout / coercion ---
@@ -236,6 +246,30 @@ func normalizeSwapRole(role string) string {
 	return "main"
 }
 
+func normalizeResolvedSlotAndRole(entry map[string]any) {
+	raw := strings.ToLower(strings.TrimSpace(stringValue(entry["slot"])))
+	raw = strings.ReplaceAll(raw, "-", "_")
+	raw = strings.ReplaceAll(raw, " ", "_")
+
+	switch raw {
+	case "offhand", "off_hand", "shield", "shields":
+		entry["slot"] = "weapon"
+		entry["swap_role"] = "offhand"
+	case "head", "helm", "helmet":
+		entry["slot"] = "head"
+	case "armor", "body_armor", "bodyarmor", "chest", "breast":
+		entry["slot"] = "armor"
+	case "weapon", "melee_weapon", "missile_weapon", "bow", "crossbow", "amazon_bow":
+		entry["slot"] = "weapon"
+	default:
+		entry["slot"] = normalizeSlotName(raw)
+	}
+
+	if strings.EqualFold(stringValue(entry["slot"]), "weapon") && stringValue(entry["swap_role"]) == "" {
+		entry["swap_role"] = "main"
+	}
+}
+
 func findGearEntryIndex(entries []map[string]any, query string) int {
 	needle := normalizeGearLookup(query)
 	for i, entry := range entries {
@@ -295,6 +329,7 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 			SwapRole:  swapRoleValue(entry),
 			Runes:     stringSliceValue(entry["runes"]),
 			Bases:     stringSliceValue(entry["possible_bases"]),
+			BaseInfo:  baseInfoValue(entry),
 			BestBases: bestBasesValue(entry), Effects: stringSliceValue(entry["effects"]), IsSwap: isWeaponSwap(entry),
 			Known:  found,
 			Needed: needed,
@@ -365,6 +400,65 @@ func bestBasesValue(entry map[string]any) []string {
 		return []string{best}
 	}
 	return nil
+}
+
+func baseInfoValue(entry map[string]any) []gearBaseInfo {
+	raw, ok := entry["possible_bases_details"]
+	if !ok || raw == nil {
+		return fallbackBaseInfo(stringSliceValue(entry["possible_bases"]))
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		return fallbackBaseInfo(stringSliceValue(entry["possible_bases"]))
+	}
+
+	out := make([]gearBaseInfo, 0, len(items))
+	for _, item := range items {
+		m, ok := normalizeEntryMap(item)
+		if !ok {
+			continue
+		}
+		name := stringValue(m["name"])
+		if name == "" {
+			continue
+		}
+		out = append(out, gearBaseInfo{
+			Name:        name,
+			BaseClass:   normalizeBaseClass(stringValue(m["base_class"])),
+			Hand:        strings.ToLower(stringValue(m["hand"])),
+			Defense:     stringValue(m["defense"]),
+			Damage:      stringValue(m["damage"]),
+			WeaponSpeed: stringValue(m["weapon_speed"]),
+		})
+		last := &out[len(out)-1]
+		if last.BaseClass == "melee_weapon" || last.BaseClass == "missile_weapon" {
+			last.Defense = ""
+			if last.WeaponSpeed == "" {
+				last.WeaponSpeed = "?"
+			}
+		}
+	}
+
+	if len(out) == 0 {
+		return fallbackBaseInfo(stringSliceValue(entry["possible_bases"]))
+	}
+	return out
+}
+
+func fallbackBaseInfo(bases []string) []gearBaseInfo {
+	if len(bases) == 0 {
+		return nil
+	}
+	out := make([]gearBaseInfo, 0, len(bases))
+	for _, name := range bases {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, gearBaseInfo{Name: trimmed})
+	}
+	return out
 }
 
 func filterStatuses(items []gearStatus, keep func(gearStatus) bool) []gearStatus {

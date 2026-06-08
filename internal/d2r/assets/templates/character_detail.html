@@ -20,9 +20,21 @@
       <input type="text" name="item" placeholder="e.g. Breath of the Dying" required>
     </label>
 
-    <label class="checkbox-row">
-      <input type="checkbox" name="weapon_swap">
-      <span>weapon swap</span>
+    <label>
+      <span class="sr-only">slot</span>
+      <select name="slot">
+        <option value="automatic" selected>automatic</option>
+        <option value="weapon">weapon</option>
+        <option value="offhand">offhand</option>
+        <option value="weapon_swap">weapon swap</option>
+        <option value="weapon_swap_offhand">weapon swap offhand</option>
+        <option value="head">head</option>
+        <option value="armor">armor</option>
+        <option value="belt">belt</option>
+        <option value="ring">ring</option>
+        <option value="amulet">amulet</option>
+        <option value="inventory">inventory</option>
+      </select>
     </label>
 
     <button type="submit">add gear</button>
@@ -94,19 +106,34 @@
         {{if .Items}}
           <ul class="gear-list" data-reorder-url="/characters/{{$.CharacterSlug}}/reorder">
           {{range .Items}}
+            {{$item := .}}
             <li class="gear-item-row" draggable="true" data-gear-key="{{.Key}}">
-              <details class="gear-card">
+              <details class="gear-card{{if .Status.Known}} known{{end}}{{if .RunewordBuildable}} runeword-ready{{end}}{{if .RunewordMissing}} runeword-missing{{end}}">
                 <summary>
                   <div class="gear-summary-left">
                     <span class="drag-handle" title="drag to reorder">⋮⋮</span>
                     <div>
                       <strong>{{.Status.Name}}</strong>
                       <small>{{.Status.Kind}}</small>
+                      {{if .RunewordBuildable}}<small class="runeword-state ready">can build now</small>{{end}}
+                      {{if .RunewordMissing}}<small class="runeword-state missing">missing runes</small>{{end}}
                     </div>
                   </div>
-                  <div class="flag-row">
-                    <span class="flag {{if .Status.Needed}}on{{else}}off{{end}}">needed</span>
-                    <span class="flag {{if .Status.Prio}}on{{else}}off{{end}}">prio</span>
+                  <div class="card-actions">
+                    {{if eq .Status.Slot "weapon"}}
+                    <form
+                      class="inline-action"
+                      method="post"
+                      hx-post="/characters/{{$.CharacterSlug}}/move-hand"
+                      hx-target="#detail-view"
+                      hx-swap="innerHTML"
+                      onmousedown="event.stopPropagation()"
+                      onclick="event.stopPropagation()"
+                    >
+                      <input type="hidden" name="key" value="{{.Key}}">
+                      <button type="submit" class="mini-btn">{{if eq .Status.SwapRole "offhand"}}to main-hand{{else}}to off-hand{{end}}</button>
+                    </form>
+                    {{end}}
                     <form
                       class="inline-action"
                       method="post"
@@ -150,27 +177,36 @@
                   <p><strong>runes:</strong> {{join .Status.Runes " -> "}}</p>
                   {{end}}
 
-                  {{if .Status.Bases}}
+                  {{if .Status.BaseInfo}}
                   <div>
                     <strong>bases:</strong>
                     <ul class="detail-list">
-                      {{range .Status.Bases}}
-                      <li>{{.}}</li>
+                      {{range .Status.BaseInfo}}
+                      <li class="base-row">
+                        <span>{{.Name}}</span>
+                        {{if or (eq .Hand "1h") (eq .Hand "2h")}}<small> • {{.Hand}}</small>{{end}}
+                        {{if and .Defense (ne .BaseClass "melee_weapon") (ne .BaseClass "missile_weapon")}}<small> • def: {{.Defense}}</small>{{end}}
+                        {{if .Damage}}<small> • dmg: {{.Damage}}</small>{{end}}
+                        {{if or (eq .BaseClass "melee_weapon") (eq .BaseClass "missile_weapon")}}<small> • wsm: {{if .WeaponSpeed}}{{.WeaponSpeed}}{{else}}?{{end}}</small>{{else if .WeaponSpeed}}<small> • wsm: {{.WeaponSpeed}}</small>{{end}}
+                        <form
+                          class="inline-action"
+                          method="post"
+                          hx-post="/characters/{{$.CharacterSlug}}/base/remove"
+                          hx-target="#detail-view"
+                          hx-swap="innerHTML"
+                          onmousedown="event.stopPropagation()"
+                          onclick="event.stopPropagation()"
+                        >
+                          <input type="hidden" name="key" value="{{$item.Key}}">
+                          <input type="hidden" name="base" value="{{.Name}}">
+                          <button type="submit" class="mini-btn danger" aria-label="remove base {{.Name}}">x</button>
+                        </form>
+                      </li>
                       {{end}}
                     </ul>
                   </div>
                   {{end}}
 
-                  {{if .Status.BestBases}}
-                  <div>
-                    <strong>best in slot (priority):</strong>
-                    <ol class="detail-list ordered">
-                      {{range .Status.BestBases}}
-                      <li>{{.}}</li>
-                      {{end}}
-                    </ol>
-                  </div>
-                  {{end}}
                   {{end}}
                 </div>
               </details>
@@ -189,10 +225,34 @@
       {{if .Runes}}
       <ul class="rune-list">
         {{range .Runes}}
-        <li>
+        <li class="{{if .Complete}}complete{{end}}">
           <span>{{.Name}}</span>
-          <strong>x{{.Count}}</strong>
-          {{if .CountessText}}<small>countess: {{.CountessText}}</small>{{end}}
+          {{if .CountessText}}<span class="rune-min-diff">{{.CountessText}}</span>{{end}}
+          <strong>x{{.Owned}} / {{.Count}}</strong>
+          <div class="rune-actions">
+            <form
+              class="inline-action"
+              method="post"
+              hx-post="/characters/{{$.CharacterSlug}}/runes"
+              hx-target="#detail-view"
+              hx-swap="innerHTML"
+            >
+              <input type="hidden" name="rune" value="{{.Name}}">
+              <input type="hidden" name="delta" value="-1">
+              <button type="submit" class="mini-btn" aria-label="decrease {{.Name}}">-</button>
+            </form>
+            <form
+              class="inline-action"
+              method="post"
+              hx-post="/characters/{{$.CharacterSlug}}/runes"
+              hx-target="#detail-view"
+              hx-swap="innerHTML"
+            >
+              <input type="hidden" name="rune" value="{{.Name}}">
+              <input type="hidden" name="delta" value="1">
+              <button type="submit" class="mini-btn" aria-label="increase {{.Name}}">+</button>
+            </form>
+          </div>
         </li>
         {{end}}
       </ul>

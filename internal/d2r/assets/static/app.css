@@ -122,6 +122,12 @@ h4 {
   transform: translateY(-1px);
 }
 
+.char-item.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface-strong), white 15%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent), white 70%);
+}
+
 .char-name {
   font-weight: 700;
 }
@@ -325,6 +331,36 @@ button:disabled {
   background: #fff;
 }
 
+.gear-card.known {
+  background: #f2fbf4;
+  border-color: #c7dfcb;
+}
+
+.gear-card.runeword-ready {
+  background: #eef8f0;
+  border-color: #b8d8bf;
+}
+
+.gear-card.runeword-missing {
+  background: #fff8e8;
+  border-color: #e5cb88;
+}
+
+.runeword-state {
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.runeword-state.ready {
+  color: var(--ok);
+}
+
+.runeword-state.missing {
+  color: #9d6a00;
+}
+
 .gear-card summary {
   list-style: none;
   cursor: pointer;
@@ -362,6 +398,13 @@ button:disabled {
   gap: 0.2rem;
 }
 
+.base-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
 .detail-list.ordered {
   list-style: decimal;
 }
@@ -371,38 +414,43 @@ button:disabled {
   color: var(--ink-soft);
 }
 
-.flag-row {
+.card-actions {
   display: flex;
   gap: 0.3rem;
   flex-wrap: wrap;
   align-content: flex-start;
 }
 
-.flag {
-  font-size: 0.72rem;
-  padding: 0.12rem 0.38rem;
-  border-radius: 999px;
-  border: 1px solid var(--off);
-  color: var(--off);
-}
-
-.flag.on {
-  border-color: var(--ok);
-  color: var(--ok);
-}
-
 .rune-list li {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.2rem 0.45rem;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 0.25rem 0.45rem;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.45rem;
+  padding: 0.32rem 0.45rem;
 }
 
-.rune-list small {
-  grid-column: 1 / -1;
+.rune-list li.complete {
+  background: #dff3e3;
+  border-color: #7fb98a;
+  box-shadow: inset 0 0 0 1px #b7ddbe;
+}
+
+.rune-list li.complete strong {
+  color: #1f6a31;
+}
+
+.rune-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.rune-min-diff {
   color: var(--ink-soft);
+  text-transform: lowercase;
+  font-size: 0.78rem;
 }
 
 .muted {

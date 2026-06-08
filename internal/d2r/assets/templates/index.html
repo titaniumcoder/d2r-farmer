@@ -17,7 +17,11 @@
     </aside>
 
     <main id="detail-view" class="detail-view">
+      {{if .Detail}}
+      {{template "character-detail" .Detail}}
+      {{else}}
       {{template "welcome" .}}
+      {{end}}
     </main>
   </div>
 
@@ -28,6 +32,7 @@
         openKeys: [],
         importURL: ''
       };
+      var pendingWindowScrollY = null;
 
       function getDetailSlug(scope) {
         var form = scope.querySelector('.import-form');
@@ -76,6 +81,17 @@
         if (importInput && detailState.importURL) {
           importInput.value = detailState.importURL;
         }
+      }
+
+      function syncActiveCharacter(slug) {
+        if (!slug) return;
+        document.querySelectorAll('.char-item').forEach(function (el) {
+          if (el.dataset.slug === slug) {
+            el.classList.add('is-active');
+          } else {
+            el.classList.remove('is-active');
+          }
+        });
       }
 
       function initGearDnD(root) {
@@ -142,13 +158,33 @@
 
       document.addEventListener('DOMContentLoaded', function () {
         initGearDnD(document);
-        captureDetailState(document.getElementById('detail-view'));
+        var detailView = document.getElementById('detail-view');
+        captureDetailState(detailView);
+        var initialSlug = getDetailSlug(detailView);
+        if (!initialSlug) {
+          var path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+          if (path && !path.includes('/')) {
+            initialSlug = path;
+          }
+        }
+        syncActiveCharacter(initialSlug);
       });
 
       document.body.addEventListener('htmx:beforeSwap', function (event) {
         var target = event.detail && event.detail.target;
         if (target && target.id === 'detail-view') {
           captureDetailState(target);
+          pendingWindowScrollY = window.scrollY;
+        }
+      });
+
+      document.body.addEventListener('htmx:beforeRequest', function (event) {
+        var target = event.detail && event.detail.target;
+        if (target && target.id === 'detail-view') {
+          var active = document.activeElement;
+          if (active && typeof active.blur === 'function') {
+            active.blur();
+          }
         }
       });
 
@@ -158,6 +194,14 @@
         if (target && target.id === 'detail-view') {
           restoreDetailState(target);
           captureDetailState(target);
+          syncActiveCharacter(getDetailSlug(target));
+          if (pendingWindowScrollY !== null) {
+            var y = pendingWindowScrollY;
+            pendingWindowScrollY = null;
+            window.requestAnimationFrame(function () {
+              window.scrollTo(0, y);
+            });
+          }
         }
       });
     })();
@@ -173,15 +217,18 @@
   <nav class="character-list">
     {{if .Characters}}
       {{range .Characters}}
-      <button
-        class="char-item"
+      <a
+        href="/{{.Slug}}"
+        class="char-item{{if eq $.ActiveSlug .Slug}} is-active{{end}}"
+        data-slug="{{.Slug}}"
         hx-get="/characters/{{.Slug}}"
+        hx-push-url="/{{.Slug}}"
         hx-target="#detail-view"
         hx-swap="innerHTML"
       >
         <span class="char-name">{{.Name}}</span>
         <span class="char-class">{{.Class}}</span>
-      </button>
+      </a>
       {{end}}
     {{else}}
       <p class="muted">No characters yet.</p>
