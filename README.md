@@ -37,6 +37,76 @@ If you build the binary first, you can also run:
 ./bin/d2r-farmer --help
 ```
 
+## Initialize Provider
+
+Initialize the LLM provider setup (currently OpenAI only):
+
+```bash
+go run . init --provider openai --api-key "$OPENAI_API_KEY"
+```
+
+Optional model override:
+
+```bash
+go run . init --provider openai --api-key "$OPENAI_API_KEY" --model gpt-4.1-mini
+```
+
+This writes `data/config.yaml`.
+
+## Add Character
+
+Create a new character file:
+
+```bash
+go run . char "Nova Sorc" --class sorceress
+```
+
+This creates `data/chars/nova-sorc.yaml`.
+
+## Add Gear
+
+Resolve and append gear to a character through OpenAI structured output:
+
+```bash
+go run . gear fury "breath of fury"
+```
+
+This updates `data/chars/fury.yaml` and appends a structured entry under `gear` from LLM output.
+
+Expected fields include:
+
+- exact_name
+- slot
+- kind
+- runes
+- possible_bases
+- best_in_slot_base
+- notes
+- sources
+
+## List
+
+List all characters:
+
+```bash
+go run . list
+```
+
+List gear for a character:
+
+```bash
+go run . list fury
+```
+
+## List Models
+
+List available models for a provider:
+
+```bash
+go run . list-models openai
+```
+
+
 ## Dependency
 
 This project uses [Cobra](https://github.com/spf13/cobra) for the command-line interface.
