@@ -1,7 +1,20 @@
 package main
 
-import "github.com/titaniumcoder/d2r-farmer/cmd"
+import (
+	"log"
+	"os"
+	"strings"
+
+	"github.com/titaniumcoder/d2r-farmer/internal/d2r"
+)
 
 func main() {
-	cmd.Execute()
+	addr := strings.TrimSpace(os.Getenv("ADDR"))
+	if addr == "" {
+		addr = ":8080"
+	}
+
+	if err := d2r.RunWeb(addr); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -1,10 +1,11 @@
-package cmd
+package d2r
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -20,6 +21,7 @@ type gearResolution struct {
 	PossibleBases  []string `json:"possible_bases"`
 	BestInSlotBase string   `json:"best_in_slot_base"`
 	BestInSlotList []string `json:"best_in_slot_bases"`
+	Effects        []string `json:"effects"`
 	Notes          string   `json:"notes"`
 	Sources        []string `json:"sources"`
 }
@@ -30,51 +32,55 @@ func resolveGearDetails(query string, className string, slotHint string, cfg Con
 	if cfg.Provider != "openai" {
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
 	}
-
 	return resolveWithOpenAI(query, className, slotHint, cfg.OpenAI)
 }
 
 func resolveWithOpenAI(query string, className string, slotHint string, cfg OpenAIConfig) (map[string]any, error) {
 	client := newOpenAIClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
 	systemPrompt := strings.TrimSpace(`You are a Diablo II: Resurrected item resolution engine.
-Return strict JSON only.
-Use current official D2R data and avoid outdated or modded content.
-Ignore stale pre-warlock community data unless it is still current and verified.
-Prefer the live item name, slot, item kind, runes, bases, and the best class-specific base.
-If a slot hint is provided, you must honor that slot exactly.
-possible_bases must list all legal non-magic bases for the runeword/item type, not only a class-specific subset.
-best_in_slot_base is the preferred base for the class/build and can be narrower than possible_bases.
-For head-slot runewords, include both generic helms and class-specific helms when legal.
-For Wisdom specifically, use non-magic helm bases (including druid pelts), not just pelts.
-For weapon swap planning, also infer swap_role (main|offhand) where possible.
-If uncertain, return kind="unknown" with empty arrays and concise notes.`)
+Return strict JSON only. Use current official D2R data.
+
+CRITICAL — determine kind carefully:
+- "runeword": item made by inserting runes into a socketed base (has a rune recipe, e.g. Grief, Enigma, Fury)
+- "unique": a specific named magic item drop (e.g. Shako, Ribcracker, Harlequin Crest, Thunderstroke)
+- "set": part of a named set (e.g. Tal Rasha's Wrappings)
+- "crafted": player-crafted via cube recipe
+- "rare": rare base item
+- "magic": magic base item
+- "base": plain non-magic base (e.g. Monarch)
+- "unknown": if truly uncertain
+
+Unique items have runes=[] and possible_bases=[].
+Runewords have a non-empty rune list and non-empty possible_bases.
+
+If a slot hint is provided, honor it exactly.
+For runewords: possible_bases lists all legal non-magic bases; best_in_slot_base is the preferred base for this class.
+For weapon swap planning, infer swap_role (main|offhand) where applicable.
+effects: list all notable stats and properties as concise strings, e.g. "Enhanced Damage: 340-400%", "Indestructible", "Prevent Monster Heal", "Cannot Be Frozen". Include weapon speed and damage range for weapons. Always populate this field.`)
 
 	userPrompt := fmt.Sprintf(
-		"Resolve this requested item for class %q: %q. Slot hint: %q. Return exact_name, slot, kind, swap_role, runes, possible_bases, best_in_slot_base, best_in_slot_bases (priority order), notes, and sources.",
-		className,
-		query,
-		slotHint,
+		"Resolve this item for class %q: %q. Slot hint: %q. Return exact_name, slot, kind, swap_role, runes, possible_bases, best_in_slot_base, best_in_slot_bases (priority order), effects (all notable stats/properties as short strings), notes, sources.",
+		className, query, slotHint,
 	)
 
-	response, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
+	response, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: shared.ChatModel(cfg.Model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			{
 				OfSystem: &openai.ChatCompletionSystemMessageParam{
-					Content: openai.ChatCompletionSystemMessageParamContentUnion{
-						OfString: openai.String(systemPrompt),
-					},
+					Content: openai.ChatCompletionSystemMessageParamContentUnion{OfString: openai.String(systemPrompt)},
 				},
 			},
 			{
 				OfUser: &openai.ChatCompletionUserMessageParam{
-					Content: openai.ChatCompletionUserMessageParamContentUnion{
-						OfString: openai.String(userPrompt),
-					},
+					Content: openai.ChatCompletionUserMessageParamContentUnion{OfString: openai.String(userPrompt)},
 				},
 			},
 		},
-		Temperature: openai.Float(0.1),
+		Temperature: openai.Float(0),
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
 				Type: "json_schema",
@@ -90,7 +96,6 @@ If uncertain, return kind="unknown" with empty arrays and concise notes.`)
 	if err != nil {
 		return nil, fmt.Errorf("create openai chat completion: %w", err)
 	}
-
 	if len(response.Choices) == 0 {
 		return nil, fmt.Errorf("openai returned no choices")
 	}
@@ -114,6 +119,7 @@ If uncertain, return kind="unknown" with empty arrays and concise notes.`)
 		"possible_bases":     resolution.PossibleBases,
 		"best_in_slot_base":  strings.TrimSpace(resolution.BestInSlotBase),
 		"best_in_slot_bases": resolution.BestInSlotList,
+		"effects":            resolution.Effects,
 		"notes":              strings.TrimSpace(resolution.Notes),
 		"sources":            resolution.Sources,
 		"query":              query,
@@ -128,11 +134,9 @@ If uncertain, return kind="unknown" with empty arrays and concise notes.`)
 	if out["kind"] == "" {
 		out["kind"] = "unknown"
 	}
-
 	if out["swap_role"] == "" {
 		out["swap_role"] = "main"
 	}
-
 	if len(stringSliceValue(out["best_in_slot_bases"])) == 0 {
 		if best := stringValue(out["best_in_slot_base"]); best != "" {
 			out["best_in_slot_bases"] = []string{best}
@@ -140,7 +144,6 @@ If uncertain, return kind="unknown" with empty arrays and concise notes.`)
 	}
 
 	applyRunewordBaseRules(out)
-
 	return out, nil
 }
 
@@ -156,7 +159,6 @@ func applyRunewordBaseRules(entry map[string]any) {
 		entry["possible_bases"] = []string{"Any non-magic 6-socket weapon"}
 		return
 	}
-
 	if strings.Contains(name, "wisdom") || strings.Contains(query, "wisdom") {
 		entry["possible_bases"] = []string{"Any non-magic helm (including class-specific helms such as druid pelts)"}
 	}
@@ -188,13 +190,17 @@ func gearSchema() map[string]any {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 			},
+			"effects": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
 			"notes": map[string]any{"type": "string"},
 			"sources": map[string]any{
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 			},
 		},
-		"required":             []string{"exact_name", "slot", "kind", "swap_role", "runes", "possible_bases", "best_in_slot_base", "best_in_slot_bases", "notes", "sources"},
+		"required":             []string{"exact_name", "slot", "kind", "swap_role", "runes", "possible_bases", "best_in_slot_base", "best_in_slot_bases", "effects", "notes", "sources"},
 		"additionalProperties": false,
 	}
 }

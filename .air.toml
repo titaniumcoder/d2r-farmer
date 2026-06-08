@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/d2r-farmer ."
+  bin = "./tmp/d2r-farmer"
+  include_ext = ["go", "html", "css", "yaml"]
+  exclude_dir = ["tmp", "vendor", "data"]
+  delay = 500
+  stop_on_error = true
+
+[log]
+  time = true

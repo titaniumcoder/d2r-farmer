@@ -1,4 +1,4 @@
-package cmd
+package d2r
 
 import "testing"
 

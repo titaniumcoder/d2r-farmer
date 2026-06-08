@@ -1,10 +1,12 @@
-package cmd
+package d2r
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,7 +14,6 @@ import (
 
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
-	"github.com/spf13/cobra"
 )
 
 type guideGearItem struct {
@@ -20,76 +21,116 @@ type guideGearItem struct {
 	Item string `json:"item"`
 }
 
+type importProgressUpdate struct {
+	Current  int
+	Total    int
+	Item     string
+	Imported int
+	Skipped  int
+}
+
+var errImportCancelled = errors.New("import cancelled")
+
 var extractGuideGearWithLLM = extractGuideGearFromURL
 
-var importCmd = &cobra.Command{
-	Use:   "import [character] [url]",
-	Short: "Import gear from a Maxroll build guide",
-	Long:  "Fetches a Maxroll guide URL and imports only gear options into the character.",
-	Args:  cobra.ExactArgs(2),
-	RunE:  runImport,
-}
+func importGuideForCharacter(character string, url string, progressf func(string, ...any), updatef func(importProgressUpdate), cancelledf func() bool) (int, int, error) {
+	logf := func(format string, args ...any) {
+		if progressf != nil {
+			progressf(format, args...)
+		}
+	}
 
-func init() {
-	rootCmd.AddCommand(importCmd)
-}
-
-func runImport(cmd *cobra.Command, args []string) error {
-	character := strings.TrimSpace(args[0])
 	if character == "" {
-		return fmt.Errorf("character cannot be empty")
+		return 0, 0, fmt.Errorf("character cannot be empty")
+	}
+	if url == "" {
+		return 0, 0, fmt.Errorf("url cannot be empty")
 	}
 
-	url := strings.TrimSpace(args[1])
-	if url == "" {
-		return fmt.Errorf("url cannot be empty")
-	}
+	logf("import start: character=%q url=%q\n", character, url)
 
 	data, err := readCharacterData(character)
 	if err != nil {
-		return err
+		logf("import failed reading character data: %v\n", err)
+		return 0, 0, err
 	}
 
 	charClass := stringValue(data["class"])
 	if charClass == "" {
-		return fmt.Errorf("character %q has no class set", character)
+		logf("import failed: class not set for character=%q\n", character)
+		return 0, 0, fmt.Errorf("character %q has no class set", character)
 	}
+	logf("import context: class=%q\n", charClass)
 
 	cfg, err := readConfig()
 	if err != nil {
-		return err
+		logf("import failed reading config: %v\n", err)
+		return 0, 0, err
 	}
 
 	items, err := extractGuideGearWithLLM(url, cfg)
 	if err != nil {
-		return fmt.Errorf("extract guide gear: %w", err)
+		logf("import failed extracting guide gear: %v\n", err)
+		return 0, 0, fmt.Errorf("extract guide gear: %w", err)
 	}
 	if len(items) == 0 {
-		return fmt.Errorf("no gear items found in guide")
+		logf("import failed: extractor returned zero items\n")
+		return 0, 0, fmt.Errorf("no gear items found in guide")
 	}
+	logf("import extracted items: count=%d\n", len(items))
 
 	gearList := coerceGearEntries(data["gear"])
 	imported := 0
 	skipped := 0
+	timeoutSkips := 0
+	total := len(items)
 
-	for _, item := range items {
-		name := strings.TrimSpace(item.Item)
-		if name == "" {
-			continue
+	for idx, item := range items {
+		if cancelledf != nil && cancelledf() {
+			logf("import cancelled before %d/%d\n", idx+1, total)
+			return imported, skipped, errImportCancelled
 		}
 
+		name := strings.TrimSpace(item.Item)
+		if name == "" {
+			logf("skip %d/%d: empty item name\n", idx+1, total)
+			if updatef != nil {
+				updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: "", Imported: imported, Skipped: skipped})
+			}
+			continue
+		}
+		logf("resolving %d/%d: item=%q slot=%q\n", idx+1, total, name, strings.TrimSpace(item.Slot))
+		if updatef != nil {
+			updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
+		}
 		if findGearEntryIndex(gearList, name) >= 0 {
 			skipped++
+			logf("skip %d/%d: duplicate item=%q already present\n", idx+1, total, name)
+			if updatef != nil {
+				updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
+			}
 			continue
 		}
 
 		slotHint, weaponSwap, swapRole := mapGuideSlot(item.Slot)
+		logf("resolve hint %d/%d: item=%q slot_hint=%q weapon_swap=%t swap_role=%q\n", idx+1, total, name, slotHint, weaponSwap, swapRole)
 
 		entry, err := resolveGearWithLLM(name, charClass, slotHint, cfg)
 		if err != nil {
-			cmd.Printf("skipped %q: %v\n", name, err)
+			if isTimeoutError(err) {
+				timeoutSkips++
+			}
+			logf("skip %d/%d: resolve failed for item=%q: %v\n", idx+1, total, name, err)
 			skipped++
+			if updatef != nil {
+				updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
+			}
 			continue
+		}
+
+		if cancelledf != nil && cancelledf() {
+			logf("import cancelled during %d/%d after resolve\n", idx+1, total)
+			return imported, skipped, errImportCancelled
 		}
 
 		if stringValue(entry["exact_name"]) == "" {
@@ -98,13 +139,11 @@ func runImport(cmd *cobra.Command, args []string) error {
 		if stringValue(entry["query"]) == "" {
 			entry["query"] = name
 		}
-
 		if slotHint != "" {
 			entry["slot"] = slotHint
 		} else {
 			entry["slot"] = normalizeSlotName(stringValue(entry["slot"]))
 		}
-
 		if weaponSwap {
 			entry["weapon_swap"] = true
 			entry["slot"] = "weapon"
@@ -113,15 +152,45 @@ func runImport(cmd *cobra.Command, args []string) error {
 
 		gearList = append(gearList, entry)
 		imported++
+		logf("imported %d/%d: item=%q kind=%q slot=%q\n", idx+1, total, stringValue(entry["exact_name"]), stringValue(entry["kind"]), stringValue(entry["slot"]))
+
+		// Persist after each successful add so the UI can reflect live progress.
+		setGearEntries(data, gearList)
+		if err := writeCharacterData(character, data); err != nil {
+			logf("import failed writing character data after item=%q: %v\n", name, err)
+			return imported, skipped, err
+		}
+		if updatef != nil {
+			updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
+		}
 	}
 
+	logf("writing character data: total_entries=%d imported=%d skipped=%d\n", len(gearList), imported, skipped)
 	setGearEntries(data, gearList)
 	if err := writeCharacterData(character, data); err != nil {
-		return err
+		logf("import failed writing character data: %v\n", err)
+		return 0, 0, err
 	}
+	if imported == 0 && timeoutSkips > 0 {
+		return 0, skipped, fmt.Errorf("all item resolutions timed out (skipped %d item(s)); please retry", timeoutSkips)
+	}
+	logf("import done: imported=%d skipped=%d\n", imported, skipped)
+	return imported, skipped, nil
+}
 
-	cmd.Printf("imported %d gear items from %s (skipped %d)\n", imported, url, skipped)
-	return nil
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout")
 }
 
 func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string) {
@@ -133,7 +202,6 @@ func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string) {
 		}
 		return "weapon", true, "main"
 	}
-
 	if strings.Contains(value, "weapon") || strings.Contains(value, "off-hand") || strings.Contains(value, "off hand") {
 		return "weapon", false, "main"
 	}
@@ -155,7 +223,6 @@ func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string) {
 	if strings.Contains(value, "charm") || strings.Contains(value, "inventory") {
 		return "inventory", false, "main"
 	}
-
 	return "inventory", false, "main"
 }
 
@@ -163,23 +230,20 @@ func extractGuideGearFromURL(url string, cfg Config) ([]guideGearItem, error) {
 	if cfg.Provider != "openai" {
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
 	}
-
 	body, err := fetchGuidePage(url)
 	if err != nil {
 		return nil, err
 	}
-
 	text := cleanupGuideHTML(body)
 	if text == "" {
 		return nil, fmt.Errorf("empty page content")
 	}
-
 	return extractGuideGearOpenAI(url, text, cfg.OpenAI)
 }
 
 func fetchGuidePage(url string) (string, error) {
 	client := &http.Client{Timeout: 25 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(url) //nolint:gosec
 	if err != nil {
 		return "", fmt.Errorf("fetch url: %w", err)
 	}
@@ -188,12 +252,10 @@ func fetchGuidePage(url string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return "", fmt.Errorf("unexpected status code %d", resp.StatusCode)
 	}
-
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read response body: %w", err)
 	}
-
 	return string(raw), nil
 }
 
@@ -231,7 +293,6 @@ func cleanupGuideHTML(raw string) string {
 		}
 		clean = clean[start:end]
 	}
-
 	if len(clean) > 45000 {
 		clean = clean[:45000]
 	}
@@ -240,6 +301,8 @@ func cleanupGuideHTML(raw string) string {
 
 func extractGuideGearOpenAI(url string, pageText string, cfg OpenAIConfig) ([]guideGearItem, error) {
 	client := newOpenAIClient(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	systemPrompt := strings.TrimSpace(`You extract Diablo II gear options from guide page text.
 Return strict JSON only.
@@ -269,7 +332,7 @@ Return slot labels and item names.`)
 		"additionalProperties": false,
 	}
 
-	response, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
+	response, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: shared.ChatModel(cfg.Model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			{
@@ -330,6 +393,5 @@ Return slot labels and item names.`)
 		seen[key] = true
 		items = append(items, guideGearItem{Slot: slot, Item: name})
 	}
-
 	return items, nil
 }

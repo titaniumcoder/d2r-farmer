@@ -1,8 +1,7 @@
-package cmd
+package d2r
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -44,13 +43,4 @@ func stringSliceValue(v any) []string {
 		}
 		return []string{text}
 	}
-}
-
-func parsePositiveIndex(raw string) (int, error) {
-	value := strings.TrimSpace(raw)
-	idx, err := strconv.Atoi(value)
-	if err != nil || idx <= 0 {
-		return 0, fmt.Errorf("index must be a positive number")
-	}
-	return idx, nil
 }

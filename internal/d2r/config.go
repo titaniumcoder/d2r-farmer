@@ -1,4 +1,4 @@
-package cmd
+package d2r
 
 import (
 	"fmt"
@@ -43,7 +43,7 @@ func readConfig() (Config, error) {
 	content, err := os.ReadFile(configPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Config{}, fmt.Errorf("missing config at %s (run `d2r-farmer init` first)", configPath())
+			return Config{}, fmt.Errorf("missing config at %s", configPath())
 		}
 		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
@@ -60,15 +60,12 @@ func readConfig() (Config, error) {
 	if cfg.Provider == "" {
 		return Config{}, fmt.Errorf("config provider is empty")
 	}
-
 	if cfg.Provider != "openai" {
 		return Config{}, fmt.Errorf("unsupported provider %q (only openai is supported for now)", cfg.Provider)
 	}
-
 	if cfg.OpenAI.APIKey == "" {
 		return Config{}, fmt.Errorf("openai.api_key is empty in %s", configPath())
 	}
-
 	if cfg.OpenAI.Model == "" {
 		cfg.OpenAI.Model = "gpt-4.1-mini"
 	}

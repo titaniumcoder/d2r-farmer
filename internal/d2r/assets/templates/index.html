@@ -1,0 +1,221 @@
+{{define "index"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>d2r farmer</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+  <div class="bg-orb bg-orb-a"></div>
+  <div class="bg-orb bg-orb-b"></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      {{template "character-list" .}}
+    </aside>
+
+    <main id="detail-view" class="detail-view">
+      {{template "welcome" .}}
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      var detailState = {
+        slug: '',
+        openKeys: [],
+        importURL: ''
+      };
+
+      function getDetailSlug(scope) {
+        var form = scope.querySelector('.import-form');
+        if (!form) return '';
+        var action = form.getAttribute('hx-post') || form.getAttribute('action') || '';
+        var match = action.match(/^\/characters\/([^/]+)\/import$/);
+        return match ? match[1] : '';
+      }
+
+      function captureDetailState(scope) {
+        if (!scope) return;
+        var slug = getDetailSlug(scope);
+        if (!slug) return;
+
+        var openKeys = [];
+        scope.querySelectorAll('.gear-item-row[data-gear-key]').forEach(function (row) {
+          var details = row.querySelector('details.gear-card');
+          if (details && details.open) {
+            openKeys.push(row.dataset.gearKey || '');
+          }
+        });
+
+        var importInput = scope.querySelector('.import-form input[name="url"]');
+        detailState = {
+          slug: slug,
+          openKeys: openKeys,
+          importURL: importInput ? importInput.value : ''
+        };
+      }
+
+      function restoreDetailState(scope) {
+        if (!scope) return;
+        var slug = getDetailSlug(scope);
+        if (!slug || slug !== detailState.slug) return;
+
+        var keySet = new Set(detailState.openKeys || []);
+        scope.querySelectorAll('.gear-item-row[data-gear-key]').forEach(function (row) {
+          var key = row.dataset.gearKey || '';
+          var details = row.querySelector('details.gear-card');
+          if (details && keySet.has(key)) {
+            details.open = true;
+          }
+        });
+
+        var importInput = scope.querySelector('.import-form input[name="url"]');
+        if (importInput && detailState.importURL) {
+          importInput.value = detailState.importURL;
+        }
+      }
+
+      function initGearDnD(root) {
+        var scope = root || document;
+        var lists = scope.querySelectorAll('.gear-list');
+        lists.forEach(function (list) {
+          if (list.dataset.dndBound === '1') {
+            return;
+          }
+          list.dataset.dndBound = '1';
+
+          list.addEventListener('dragstart', function (event) {
+            var row = event.target.closest('.gear-item-row');
+            if (!row) return;
+            event.dataTransfer.setData('text/plain', row.dataset.gearKey || '');
+            event.dataTransfer.effectAllowed = 'move';
+          });
+
+          list.addEventListener('dragover', function (event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            var row = event.target.closest('.gear-item-row');
+            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
+              el.classList.remove('drag-over');
+            });
+            if (row) {
+              row.classList.add('drag-over');
+            }
+          });
+
+          list.addEventListener('dragleave', function () {
+            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
+              el.classList.remove('drag-over');
+            });
+          });
+
+          list.addEventListener('drop', function (event) {
+            event.preventDefault();
+            var sourceKey = event.dataTransfer.getData('text/plain');
+            var targetRow = event.target.closest('.gear-item-row');
+            if (!sourceKey || !targetRow) return;
+
+            var targetKey = targetRow.dataset.gearKey || '';
+            if (!targetKey || sourceKey === targetKey) return;
+
+            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
+              el.classList.remove('drag-over');
+            });
+
+            var reorderUrl = list.dataset.reorderUrl;
+            if (!reorderUrl) return;
+
+            htmx.ajax('POST', reorderUrl, {
+              target: '#detail-view',
+              swap: 'innerHTML',
+              values: {
+                source_key: sourceKey,
+                target_key: targetKey
+              }
+            });
+          });
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', function () {
+        initGearDnD(document);
+        captureDetailState(document.getElementById('detail-view'));
+      });
+
+      document.body.addEventListener('htmx:beforeSwap', function (event) {
+        var target = event.detail && event.detail.target;
+        if (target && target.id === 'detail-view') {
+          captureDetailState(target);
+        }
+      });
+
+      document.body.addEventListener('htmx:afterSwap', function (event) {
+        initGearDnD(event.target);
+        var target = event.detail && event.detail.target;
+        if (target && target.id === 'detail-view') {
+          restoreDetailState(target);
+          captureDetailState(target);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
+{{end}}
+
+{{define "character-list"}}
+<div id="character-list" class="character-list-wrap">
+  <h1>Characters</h1>
+
+  <nav class="character-list">
+    {{if .Characters}}
+      {{range .Characters}}
+      <button
+        class="char-item"
+        hx-get="/characters/{{.Slug}}"
+        hx-target="#detail-view"
+        hx-swap="innerHTML"
+      >
+        <span class="char-name">{{.Name}}</span>
+        <span class="char-class">{{.Class}}</span>
+      </button>
+      {{end}}
+    {{else}}
+      <p class="muted">No characters yet.</p>
+    {{end}}
+  </nav>
+
+  <form
+    class="new-character-form"
+    hx-post="/characters"
+    hx-target="#character-list"
+    hx-swap="outerHTML"
+    hx-on::after-request="if(event.detail.successful){this.reset()}"
+  >
+    <h2>New Character</h2>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <input type="text" name="name" placeholder="character name" required>
+    <select name="class" required>
+      <option value="">select class</option>
+      <option value="amazon">amazon</option>
+      <option value="assassin">assassin</option>
+      <option value="barbarian">barbarian</option>
+      <option value="druid">druid</option>
+      <option value="necromancer">necromancer</option>
+      <option value="paladin">paladin</option>
+      <option value="sorceress">sorceress</option>
+    </select>
+    <button type="submit">create</button>
+  </form>
+</div>
+{{end}}
+
+{{define "welcome"}}
+<section class="welcome">
+  <h2>d2r farmer</h2>
+  <p>Pick a character on the left to inspect gear, flags, and rune needs.</p>
+</section>
+{{end}}

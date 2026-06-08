@@ -1,0 +1,205 @@
+{{define "character-detail"}}
+<section class="character-detail">
+  <div class="detail-top">
+    <div class="title-block">
+      <h2>{{.CharacterName}}</h2>
+      <p class="title-class">{{.ClassName}}</p>
+    </div>
+  </div>
+
+  <form
+    class="new-gear-form"
+    method="post"
+    hx-post="/characters/{{.CharacterSlug}}/gear"
+    hx-target="#detail-view"
+    hx-swap="innerHTML"
+    hx-sync="this:replace"
+  >
+    <label class="gear-input-wrap">
+      <span class="sr-only">add gear item</span>
+      <input type="text" name="item" placeholder="e.g. Breath of the Dying" required>
+    </label>
+
+    <label class="checkbox-row">
+      <input type="checkbox" name="weapon_swap">
+      <span>weapon swap</span>
+    </label>
+
+    <button type="submit">add gear</button>
+    <span class="form-status htmx-indicator">adding gear...</span>
+  </form>
+
+  <form
+    class="import-form"
+    method="post"
+    hx-post="/characters/{{.CharacterSlug}}/import"
+    hx-target="#detail-view"
+    hx-swap="innerHTML"
+    hx-sync="this:replace"
+  >
+    <label class="gear-input-wrap">
+      <span class="sr-only">import url</span>
+      <input type="url" name="url" placeholder="import build URL" value="{{.ImportURL}}" required>
+    </label>
+    <button type="submit" {{if .ImportRunning}}disabled{{end}}>import</button>
+    <span class="form-status htmx-indicator">importing URL...</span>
+  </form>
+
+  {{if .ImportRunning}}
+  <div
+    class="import-progress"
+    hx-get="/characters/{{.CharacterSlug}}/import/live"
+    hx-trigger="every 1s"
+    hx-target="#detail-view"
+    hx-swap="innerHTML"
+  >
+    <p class="import-progress-text">adding {{.ImportCurrent}}/{{.ImportTotal}}: {{.ImportItem}}</p>
+    <progress value="{{.ImportCurrent}}" max="{{if gt .ImportTotal 0}}{{.ImportTotal}}{{else}}1{{end}}"></progress>
+    <form
+      class="import-cancel-form"
+      method="post"
+      hx-post="/characters/{{.CharacterSlug}}/import/cancel"
+      hx-target="#detail-view"
+      hx-swap="innerHTML"
+    >
+      <button type="submit" class="danger" {{if .ImportCancel}}disabled{{end}}>{{if .ImportCancel}}cancelling...{{else}}cancel{{end}}</button>
+    </form>
+    <p class="muted">added {{.ImportAdded}}, skipped {{.ImportSkipped}}</p>
+  </div>
+  {{end}}
+
+  {{if .Notice}}
+  <p class="notice">{{.Notice}}</p>
+  {{end}}
+
+  {{if .Error}}
+  <p class="error">{{.Error}}</p>
+  {{end}}
+
+  {{if .Mandatory}}
+  <div class="mandatory">
+    <h3>mandatory</h3>
+    <p>{{join .Mandatory ", "}}</p>
+  </div>
+  {{end}}
+
+  <div class="detail-columns">
+    <section class="gear-pane">
+      <h3>gear</h3>
+      <p class="slot-hint">drag to reorder. click card to expand.</p>
+
+      {{range .Sections}}
+      <div class="slot-block">
+        <h4>{{.Label}}</h4>
+        {{if .Items}}
+          <ul class="gear-list" data-reorder-url="/characters/{{$.CharacterSlug}}/reorder">
+          {{range .Items}}
+            <li class="gear-item-row" draggable="true" data-gear-key="{{.Key}}">
+              <details class="gear-card">
+                <summary>
+                  <div class="gear-summary-left">
+                    <span class="drag-handle" title="drag to reorder">⋮⋮</span>
+                    <div>
+                      <strong>{{.Status.Name}}</strong>
+                      <small>{{.Status.Kind}}</small>
+                    </div>
+                  </div>
+                  <div class="flag-row">
+                    <span class="flag {{if .Status.Needed}}on{{else}}off{{end}}">needed</span>
+                    <span class="flag {{if .Status.Prio}}on{{else}}off{{end}}">prio</span>
+                    <form
+                      class="inline-action"
+                      method="post"
+                      hx-post="/characters/{{$.CharacterSlug}}/toggle-known"
+                      hx-target="#detail-view"
+                      hx-swap="innerHTML"
+                      onmousedown="event.stopPropagation()"
+                      onclick="event.stopPropagation()"
+                    >
+                      <input type="hidden" name="key" value="{{.Key}}">
+                      <button type="submit" class="mini-btn {{if .Status.Known}}active{{end}}">{{if .Status.Known}}unfound{{else}}known{{end}}</button>
+                    </form>
+                    <form
+                      class="inline-action"
+                      method="post"
+                      hx-post="/characters/{{$.CharacterSlug}}/remove"
+                      hx-target="#detail-view"
+                      hx-swap="innerHTML"
+                      onmousedown="event.stopPropagation()"
+                      onclick="event.stopPropagation()"
+                    >
+                      <input type="hidden" name="key" value="{{.Key}}">
+                      <button type="submit" class="mini-btn danger" aria-label="remove">x</button>
+                    </form>
+                  </div>
+                </summary>
+
+                <div class="gear-card-body">
+                  <p><strong>type:</strong> {{.Status.Kind}}</p>
+
+                  {{if .Status.Effects}}
+                  <ul class="detail-list effects-list">
+                    {{range .Status.Effects}}
+                    <li>{{.}}</li>
+                    {{end}}
+                  </ul>
+                  {{end}}
+
+                  {{if eq .Status.Kind "runeword"}}
+                  {{if .Status.Runes}}
+                  <p><strong>runes:</strong> {{join .Status.Runes " -> "}}</p>
+                  {{end}}
+
+                  {{if .Status.Bases}}
+                  <div>
+                    <strong>bases:</strong>
+                    <ul class="detail-list">
+                      {{range .Status.Bases}}
+                      <li>{{.}}</li>
+                      {{end}}
+                    </ul>
+                  </div>
+                  {{end}}
+
+                  {{if .Status.BestBases}}
+                  <div>
+                    <strong>best in slot (priority):</strong>
+                    <ol class="detail-list ordered">
+                      {{range .Status.BestBases}}
+                      <li>{{.}}</li>
+                      {{end}}
+                    </ol>
+                  </div>
+                  {{end}}
+                  {{end}}
+                </div>
+              </details>
+            </li>
+          {{end}}
+          </ul>
+        {{else}}
+          <p class="muted">none</p>
+        {{end}}
+      </div>
+      {{end}}
+    </section>
+
+    <aside class="rune-pane">
+      <h3>runes</h3>
+      {{if .Runes}}
+      <ul class="rune-list">
+        {{range .Runes}}
+        <li>
+          <span>{{.Name}}</span>
+          <strong>x{{.Count}}</strong>
+          {{if .CountessText}}<small>countess: {{.CountessText}}</small>{{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="muted">no needed runes</p>
+      {{end}}
+    </aside>
+  </div>
+</section>
+{{end}}
