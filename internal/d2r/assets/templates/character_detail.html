@@ -20,21 +20,9 @@
       <input type="text" name="item" placeholder="e.g. Breath of the Dying" required>
     </label>
 
-    <label>
-      <span class="sr-only">slot</span>
-      <select name="slot">
-        <option value="automatic" selected>automatic</option>
-        <option value="weapon">weapon</option>
-        <option value="offhand">offhand</option>
-        <option value="weapon_swap">weapon swap</option>
-        <option value="weapon_swap_offhand">weapon swap offhand</option>
-        <option value="head">head</option>
-        <option value="armor">armor</option>
-        <option value="belt">belt</option>
-        <option value="ring">ring</option>
-        <option value="amulet">amulet</option>
-        <option value="inventory">inventory</option>
-      </select>
+    <label class="checkbox-row">
+      <input type="checkbox" name="merc">
+      <span>for merc</span>
     </label>
 
     <button type="submit">add gear</button>
@@ -103,8 +91,8 @@
       {{range .Sections}}
       <div class="slot-block">
         <h4>{{.Label}}</h4>
+        <ul class="gear-list" data-reorder-url="/characters/{{$.CharacterSlug}}/reorder" data-section-label="{{.Label}}">
         {{if .Items}}
-          <ul class="gear-list" data-reorder-url="/characters/{{$.CharacterSlug}}/reorder">
           {{range .Items}}
             {{$item := .}}
             <li class="gear-item-row" draggable="true" data-gear-key="{{.Key}}">
@@ -120,7 +108,7 @@
                     </div>
                   </div>
                   <div class="card-actions">
-                    {{if eq .Status.Slot "weapon"}}
+                    {{if and (eq .Status.Slot "weapon") (not .Status.Merc)}}
                     <form
                       class="inline-action"
                       method="post"
@@ -146,6 +134,7 @@
                       <input type="hidden" name="key" value="{{.Key}}">
                       <button type="submit" class="mini-btn {{if .Status.Known}}active{{end}}">{{if .Status.Known}}unfound{{else}}known{{end}}</button>
                     </form>
+                    <button type="button" class="mini-btn {{if .Status.Note}}active{{end}}" aria-label="edit note" title="edit note" onmousedown="event.stopPropagation()" onclick="event.stopPropagation();(function(){var block=document.getElementById('note-block-{{.Key}}');if(!block){return;}block.classList.add('is-editing');var ta=block.querySelector('textarea');if(ta){ta.style.height='auto';ta.style.height=ta.scrollHeight+'px';ta.focus();}})();">edit</button>
                     <form
                       class="inline-action"
                       method="post"
@@ -172,6 +161,24 @@
                   </ul>
                   {{end}}
 
+                  <div id="note-block-{{.Key}}" class="note-block">
+                    <p class="note-display">{{.Status.Note}}</p>
+                    <form
+                      class="note-editor"
+                      method="post"
+                      hx-post="/characters/{{$.CharacterSlug}}/note"
+                      hx-target="#detail-view"
+                      hx-swap="innerHTML"
+                    >
+                      <input type="hidden" name="key" value="{{.Key}}">
+                      <textarea id="note-{{.Key}}" name="note" rows="6" placeholder="add your note..." oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'" style="height:auto;overflow:hidden">{{.Status.Note}}</textarea>
+                      <div class="note-actions">
+                        <button type="submit" class="mini-btn {{if .Status.Note}}active{{end}}">save</button>
+                        <button type="button" class="mini-btn" onclick="(function(){var block=document.getElementById('note-block-{{.Key}}');if(!block){return;}block.classList.remove('is-editing');})();">cancel</button>
+                      </div>
+                    </form>
+                  </div>
+
                   {{if eq .Status.Kind "runeword"}}
                   {{if .Status.Runes}}
                   <p><strong>runes:</strong> {{join .Status.Runes " -> "}}</p>
@@ -185,8 +192,8 @@
                       <li class="base-row">
                         <span>{{.Name}}</span>
                         {{if or (eq .Hand "1h") (eq .Hand "2h")}}<small> • {{.Hand}}</small>{{end}}
-                        {{if and .Defense (ne .BaseClass "melee_weapon") (ne .BaseClass "missile_weapon")}}<small> • def: {{.Defense}}</small>{{end}}
-                        {{if .Damage}}<small> • dmg: {{.Damage}}</small>{{end}}
+                        {{if and .Defense (ne .BaseClass "melee_weapon") (ne .BaseClass "missile_weapon")}}<small> • def: {{.Defense}}{{if .DefenseAvg}} (avg: {{.DefenseAvg}}){{end}}</small>{{end}}
+                        {{if .Damage}}<small> • dmg: {{.Damage}}{{if .DamageAvg}} (avg: {{.DamageAvg}}){{end}}</small>{{end}}
                         {{if or (eq .BaseClass "melee_weapon") (eq .BaseClass "missile_weapon")}}<small> • wsm: {{if .WeaponSpeed}}{{.WeaponSpeed}}{{else}}?{{end}}</small>{{else if .WeaponSpeed}}<small> • wsm: {{.WeaponSpeed}}</small>{{end}}
                         <form
                           class="inline-action"
@@ -212,10 +219,10 @@
               </details>
             </li>
           {{end}}
-          </ul>
         {{else}}
-          <p class="muted">none</p>
+          <li class="gear-drop-placeholder" aria-hidden="true">drop item here</li>
         {{end}}
+        </ul>
       </div>
       {{end}}
     </section>

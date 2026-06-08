@@ -52,6 +52,19 @@ type webPageData struct {
 	Detail     *webDetailData
 }
 
+type webModelOption struct {
+	ID      string
+	Pricing string
+}
+
+type settingsPageData struct {
+	APIKey        string
+	SelectedModel string
+	Models        []webModelOption
+	Error         string
+	Notice        string
+}
+
 type webDetailData struct {
 	CharacterSlug string
 	CharacterName string
@@ -128,6 +141,8 @@ func RunWeb(addr string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/settings", s.handleSettingsPage)
+	mux.HandleFunc("/settings/save", s.handleSaveSettings)
 	mux.HandleFunc("/welcome", s.handleWelcome)
 	mux.HandleFunc("/characters", s.handleCreateCharacter)
 	mux.HandleFunc("/characters/", s.handleCharacterRoutes)
@@ -260,6 +275,10 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := strings.Trim(r.URL.Path, "/")
+	if path == "settings" {
+		http.Redirect(w, r, "/settings", http.StatusFound)
+		return
+	}
 	if strings.Contains(path, "/") {
 		http.NotFound(w, r)
 		return
@@ -308,6 +327,113 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_ = s.templates.ExecuteTemplate(w, "index", data)
 }
 
+func (s *webServer) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg, err := readConfig()
+	models := fallbackModels()
+	modelsErr := ""
+	if err == nil {
+		live, liveErr := availableModels(cfg.OpenAI.APIKey)
+		if liveErr != nil {
+			modelsErr = fmt.Sprintf("could not load models from OpenAI API: %v", liveErr)
+		} else {
+			models = live
+		}
+	}
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{Error: err.Error(), Models: models})
+		return
+	}
+	models = ensureSelectedModel(models, cfg.OpenAI.Model)
+
+	data := settingsPageData{
+		APIKey:        cfg.OpenAI.APIKey,
+		SelectedModel: cfg.OpenAI.Model,
+		Models:        models,
+		Error:         modelsErr,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = s.templates.ExecuteTemplate(w, "settings-page", data)
+}
+
+func (s *webServer) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	apiKey := strings.TrimSpace(r.FormValue("api_key"))
+	model := strings.TrimSpace(r.FormValue("model"))
+	models := fallbackModels()
+	if strings.TrimSpace(apiKey) != "" {
+		if live, liveErr := availableModels(apiKey); liveErr == nil {
+			models = live
+		}
+	}
+	models = ensureSelectedModel(models, model)
+	if apiKey == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{
+			APIKey:        "",
+			SelectedModel: model,
+			Models:        models,
+			Error:         "api key cannot be empty",
+		})
+		return
+	}
+	if model == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{
+			APIKey:        apiKey,
+			SelectedModel: "",
+			Models:        models,
+			Error:         "model cannot be empty",
+		})
+		return
+	}
+
+	current, err := readConfig()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{Error: err.Error(), Models: models})
+		return
+	}
+
+	current.OpenAI.APIKey = apiKey
+	current.OpenAI.Model = model
+	if err := writeConfig(current); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{
+			APIKey:        apiKey,
+			SelectedModel: model,
+			Models:        models,
+			Error:         err.Error(),
+		})
+		return
+	}
+
+	if live, liveErr := availableModels(apiKey); liveErr == nil {
+		models = ensureSelectedModel(live, model)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = s.templates.ExecuteTemplate(w, "settings-page", settingsPageData{
+		APIKey:        apiKey,
+		SelectedModel: model,
+		Models:        models,
+		Notice:        "settings saved",
+	})
+}
+
 func (s *webServer) handleWelcome(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -331,6 +457,14 @@ func (s *webServer) handleCreateCharacter(w http.ResponseWriter, r *http.Request
 	name := strings.TrimSpace(r.FormValue("name"))
 	className := strings.TrimSpace(r.FormValue("class"))
 	err := createCharacterFromWeb(name, className)
+	if err == nil {
+		slug := slugifyName(name)
+		if slug != "" {
+			w.Header().Set("HX-Redirect", "/"+slug)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 
 	chars, loadErr := loadCharacters()
 	if loadErr != nil {
@@ -371,8 +505,8 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		}
 
 		item := strings.TrimSpace(r.FormValue("item"))
-		slot := strings.TrimSpace(r.FormValue("slot"))
-		err := addGearFromWeb(slug, item, slot)
+		merc := strings.EqualFold(strings.TrimSpace(r.FormValue("merc")), "on")
+		err := addGearFromWeb(slug, item, merc)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			s.renderCharacterDetail(w, slug, err.Error(), "")
@@ -380,6 +514,26 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		}
 
 		s.renderCharacterDetail(w, slug, "", "")
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "delete" && r.Method == http.MethodPost {
+		err := deleteCharacterFromWeb(slug)
+
+		chars, loadErr := loadCharacters()
+		if loadErr != nil {
+			http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		data := webPageData{Characters: chars}
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			data.Error = err.Error()
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = s.templates.ExecuteTemplate(w, "character-list", data)
 		return
 	}
 
@@ -476,6 +630,22 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "note" && r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		key := strings.TrimSpace(r.FormValue("key"))
+		note := strings.TrimSpace(r.FormValue("note"))
+		if err := updateGearNoteFromWeb(slug, key, note); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			s.renderCharacterDetail(w, slug, err.Error(), "")
+			return
+		}
+		s.renderCharacterDetail(w, slug, "", "")
+		return
+	}
+
 	if len(parts) == 2 && parts[1] == "reorder" && r.Method == http.MethodPost {
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid form", http.StatusBadRequest)
@@ -483,7 +653,9 @@ func (s *webServer) handleCharacterRoutes(w http.ResponseWriter, r *http.Request
 		}
 		sourceKey := strings.TrimSpace(r.FormValue("source_key"))
 		targetKey := strings.TrimSpace(r.FormValue("target_key"))
-		if err := reorderGearFromWeb(slug, sourceKey, targetKey); err != nil {
+		position := strings.TrimSpace(r.FormValue("position"))
+		targetSection := strings.TrimSpace(r.FormValue("target_section"))
+		if err := reorderGearFromWeb(slug, sourceKey, targetKey, position, targetSection); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			s.renderCharacterDetail(w, slug, err.Error(), "")
 			return
@@ -656,22 +828,33 @@ func createCharacterFromWeb(name string, className string) error {
 	return nil
 }
 
-func addGearFromWeb(character string, gear string, selectedSlot string) error {
+func deleteCharacterFromWeb(character string) error {
+	if character == "" {
+		return fmt.Errorf("character cannot be empty")
+	}
+
+	charFile := filepath.Join("data", "chars", slugifyName(character)+".yaml")
+	if err := os.Remove(charFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("character does not exist")
+		}
+		return fmt.Errorf("delete character file: %w", err)
+	}
+
+	clearImportJob(character)
+	importJobsMu.Lock()
+	delete(importURLs, character)
+	importJobsMu.Unlock()
+
+	return nil
+}
+
+func addGearFromWeb(character string, gear string, merc bool) error {
 	if character == "" {
 		return fmt.Errorf("character cannot be empty")
 	}
 	if gear == "" {
 		return fmt.Errorf("gear cannot be empty")
-	}
-
-	slotHint, err := normalizeSelectedSlotHint(selectedSlot)
-	if err != nil {
-		return err
-	}
-
-	llmSlotHint := slotHint
-	if slotHint == "weapon_swap" || slotHint == "weapon_swap_offhand" {
-		llmSlotHint = "weapon"
 	}
 
 	data, err := readCharacterData(character)
@@ -689,9 +872,13 @@ func addGearFromWeb(character string, gear string, selectedSlot string) error {
 		return err
 	}
 
-	entry, err := resolveGearWithLLM(gear, charClass, llmSlotHint, cfg)
+	entry, err := resolveGearWithLLM(gear, charClass, "", cfg)
 	if err != nil {
 		return fmt.Errorf("resolve gear details: %w", err)
+	}
+	if merc {
+		entry["merc"] = true
+		applyMercEtherealIfIndestructible(entry)
 	}
 
 	if strings.TrimSpace(fmt.Sprint(entry["exact_name"])) == "" {
@@ -702,30 +889,18 @@ func addGearFromWeb(character string, gear string, selectedSlot string) error {
 	}
 
 	normalizeResolvedSlotAndRole(entry)
-	entry["weapon_swap"] = false
-	if slotHint != "" {
-		switch slotHint {
-		case "weapon_swap":
-			entry["slot"] = "weapon"
-			entry["weapon_swap"] = true
-			entry["swap_role"] = "main"
-		case "weapon_swap_offhand":
-			entry["slot"] = "weapon"
-			entry["weapon_swap"] = true
-			entry["swap_role"] = "offhand"
-		case "offhand":
-			entry["slot"] = "weapon"
-			entry["swap_role"] = "offhand"
-		case "weapon":
-			entry["slot"] = "weapon"
-			entry["swap_role"] = "main"
-		default:
-			entry["slot"] = normalizeSlotName(slotHint)
-		}
-	}
 
 	gearList := coerceGearEntries(data["gear"])
-	gearList = append(gearList, entry)
+	entries := cloneEntryForPossibleSlots(entry)
+	if len(entries) == 0 {
+		entries = []map[string]any{entry}
+	}
+	for _, expanded := range entries {
+		if merc {
+			expanded["merc"] = true
+		}
+		gearList = append(gearList, expanded)
+	}
 	setGearEntries(data, gearList)
 
 	if err := writeCharacterData(character, data); err != nil {
@@ -735,16 +910,69 @@ func addGearFromWeb(character string, gear string, selectedSlot string) error {
 	return nil
 }
 
-func normalizeSelectedSlotHint(raw string) (string, error) {
-	value := strings.ToLower(strings.TrimSpace(raw))
-	switch value {
-	case "", "automatic", "auto":
-		return "", nil
-	case "weapon", "offhand", "weapon_swap", "weapon_swap_offhand", "head", "armor", "belt", "ring", "amulet", "inventory":
-		return value, nil
-	default:
-		return "", fmt.Errorf("invalid slot selection")
+func cloneEntryForPossibleSlots(entry map[string]any) []map[string]any {
+	possible := stringSliceValue(entry["possible_slots"])
+	if len(possible) == 0 {
+		return nil
 	}
+
+	out := make([]map[string]any, 0, len(possible))
+	for _, slot := range possible {
+		norm := normalizeRunewordSlot(slot)
+		if norm == "" {
+			continue
+		}
+		copyEntry := map[string]any{}
+		for k, v := range entry {
+			copyEntry[k] = v
+		}
+		copyEntry["weapon_swap"] = false
+		switch norm {
+		case "offhand":
+			copyEntry["slot"] = "weapon"
+			copyEntry["swap_role"] = "offhand"
+		case "weapon":
+			copyEntry["slot"] = "weapon"
+			copyEntry["swap_role"] = "main"
+		case "helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory":
+			copyEntry["slot"] = norm
+			delete(copyEntry, "swap_role")
+		default:
+			continue
+		}
+		out = append(out, copyEntry)
+	}
+	return out
+}
+
+func hasGearEntryPlacement(entries []map[string]any, candidate map[string]any) bool {
+	name := normalizeGearLookup(stringValue(candidate["exact_name"]))
+	if name == "" {
+		name = normalizeGearLookup(stringValue(candidate["query"]))
+	}
+	slot := normalizeSlotName(stringValue(candidate["slot"]))
+	role := normalizeSwapRole(stringValue(candidate["swap_role"]))
+	candidateMerc := isMercEntry(candidate)
+	for _, existing := range entries {
+		existingName := normalizeGearLookup(stringValue(existing["exact_name"]))
+		if existingName == "" {
+			existingName = normalizeGearLookup(stringValue(existing["query"]))
+		}
+		if existingName != name {
+			continue
+		}
+		if normalizeSlotName(stringValue(existing["slot"])) != slot {
+			continue
+		}
+		if isMercEntry(existing) != candidateMerc {
+			continue
+		}
+		if slot == "weapon" && normalizeSwapRole(stringValue(existing["swap_role"])) != role {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func parseGearKey(key string, length int) (int, error) {
@@ -796,6 +1024,9 @@ func toggleHandFromWeb(character string, key string) error {
 	if slotForEntry(gearList[idx]) != "weapon" {
 		return fmt.Errorf("hand can only be changed for weapon items")
 	}
+	if isMercEntry(gearList[idx]) {
+		return fmt.Errorf("merc weapon slots are fixed; reorder merc weapons instead")
+	}
 
 	if normalizeSwapRole(stringValue(gearList[idx]["swap_role"])) == "offhand" {
 		gearList[idx]["swap_role"] = "main"
@@ -824,7 +1055,30 @@ func removeGearFromWeb(character string, key string) error {
 	return writeCharacterData(character, data)
 }
 
-func reorderGearFromWeb(character string, sourceKey string, targetKey string) error {
+func updateGearNoteFromWeb(character string, key string, note string) error {
+	data, err := readCharacterData(character)
+	if err != nil {
+		return err
+	}
+
+	gearList := coerceGearEntries(data["gear"])
+	idx, err := parseGearKey(key, len(gearList))
+	if err != nil {
+		return err
+	}
+
+	note = strings.TrimSpace(note)
+	if note == "" {
+		delete(gearList[idx], "user_note")
+	} else {
+		gearList[idx]["user_note"] = note
+	}
+
+	setGearEntries(data, gearList)
+	return writeCharacterData(character, data)
+}
+
+func reorderGearFromWeb(character string, sourceKey string, targetKey string, position string, targetSection string) error {
 	data, err := readCharacterData(character)
 	if err != nil {
 		return err
@@ -839,32 +1093,103 @@ func reorderGearFromWeb(character string, sourceKey string, targetKey string) er
 	if err != nil {
 		return err
 	}
-	target, err := parseGearKey(targetKey, len(gearList))
-	if err != nil {
-		return err
-	}
-	if source == target {
-		return nil
+	target := -1
+	if targetKey != "" {
+		target, err = parseGearKey(targetKey, len(gearList))
+		if err != nil {
+			return err
+		}
 	}
 
 	item := gearList[source]
-	gearList = append(gearList[:source], gearList[source+1:]...)
-	if source < target {
-		target--
-	}
-	if target < 0 {
-		target = 0
-	}
-	if target > len(gearList) {
-		target = len(gearList)
+	if err := applyDragSectionPlacement(item, targetSection); err != nil {
+		return err
 	}
 
-	front := append([]map[string]any{}, gearList[:target]...)
+	gearList = append(gearList[:source], gearList[source+1:]...)
+
+	insertAt := len(gearList)
+	if target >= 0 {
+		if source < target {
+			target--
+		}
+		switch strings.ToLower(strings.TrimSpace(position)) {
+		case "before":
+			insertAt = target
+		case "after":
+			insertAt = target + 1
+		default:
+			insertAt = target
+		}
+	}
+	if insertAt < 0 {
+		insertAt = 0
+	}
+	if insertAt > len(gearList) {
+		insertAt = len(gearList)
+	}
+
+	front := append([]map[string]any{}, gearList[:insertAt]...)
 	front = append(front, item)
-	gearList = append(front, gearList[target:]...)
+	gearList = append(front, gearList[insertAt:]...)
 
 	setGearEntries(data, gearList)
 	return writeCharacterData(character, data)
+}
+
+func applyDragSectionPlacement(entry map[string]any, section string) error {
+	value := strings.ToLower(strings.TrimSpace(section))
+	if value == "" {
+		return nil
+	}
+
+	setMerc := func(merc bool) {
+		entry["merc"] = merc
+	}
+	setWeapon := func(isSwap bool, role string) {
+		entry["slot"] = "weapon"
+		entry["weapon_swap"] = isSwap
+		entry["swap_role"] = normalizeSwapRole(role)
+	}
+	setSimple := func(slot string) {
+		entry["slot"] = slot
+		entry["weapon_swap"] = false
+		delete(entry, "swap_role")
+	}
+
+	switch value {
+	case "weapon":
+		setMerc(false)
+		setWeapon(false, "main")
+	case "offhand":
+		setMerc(false)
+		setWeapon(false, "offhand")
+	case "weapon swap":
+		setMerc(false)
+		setWeapon(true, "main")
+	case "weapon swap offhand":
+		setMerc(false)
+		setWeapon(true, "offhand")
+	case "helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory":
+		setMerc(false)
+		setSimple(value)
+	case "merc weapon":
+		setMerc(true)
+		setWeapon(false, "main")
+	case "merc offhand":
+		setMerc(true)
+		setWeapon(false, "offhand")
+	case "merc helm":
+		setMerc(true)
+		setSimple("helm")
+	case "merc armor":
+		setMerc(true)
+		setSimple("armor")
+	default:
+		return fmt.Errorf("unsupported target section %q", section)
+	}
+
+	return nil
 }
 
 func adjustRuneOwnedFromWeb(character string, runeName string, delta int) error {
@@ -1044,7 +1369,7 @@ func buildCharacterDetailData(slug string) (webDetailData, error) {
 	}
 
 	if len(allItems) == 0 {
-		for _, label := range []string{"weapon", "offhand", "weapon swap", "weapon swap offhand", "head", "armor", "belt", "ring", "amulet", "inventory"} {
+		for _, label := range []string{"weapon", "offhand", "weapon swap", "weapon swap offhand", "helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory", "merc weapon", "merc offhand", "merc helm", "merc armor"} {
 			sections = append(sections, webSection{Label: label})
 		}
 	} else {
@@ -1053,15 +1378,24 @@ func buildCharacterDetailData(slug string) (webDetailData, error) {
 			bySlot[item.Status.Slot] = append(bySlot[item.Status.Slot], item)
 		}
 
-		weapon := bySlot["weapon"]
+		weapon := filterWebItems(bySlot["weapon"], func(s gearStatus) bool { return !s.Merc })
+		mercWeapon := filterWebItems(bySlot["merc_weapon"], func(s gearStatus) bool { return s.Merc })
+		mercHelm := filterWebItems(bySlot["merc_helm"], func(s gearStatus) bool { return s.Merc })
+		mercArmor := filterWebItems(bySlot["merc_armor"], func(s gearStatus) bool { return s.Merc })
+		mercMain, mercOffhand := splitMercWeaponSlots(mercWeapon)
 		sections = append(sections, webSection{Label: "weapon", Items: filterWebItems(weapon, func(s gearStatus) bool { return !s.IsSwap && s.SwapRole != "offhand" })})
 		sections = append(sections, webSection{Label: "offhand", Items: filterWebItems(weapon, func(s gearStatus) bool { return !s.IsSwap && s.SwapRole == "offhand" })})
 		sections = append(sections, webSection{Label: "weapon swap", Items: filterWebItems(weapon, func(s gearStatus) bool { return s.IsSwap && s.SwapRole != "offhand" })})
 		sections = append(sections, webSection{Label: "weapon swap offhand", Items: filterWebItems(weapon, func(s gearStatus) bool { return s.IsSwap && s.SwapRole == "offhand" })})
 
-		for _, slot := range []string{"head", "armor", "belt", "ring", "amulet", "inventory"} {
-			sections = append(sections, webSection{Label: slot, Items: bySlot[slot]})
+		for _, slot := range []string{"helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory"} {
+			sections = append(sections, webSection{Label: slot, Items: filterWebItems(bySlot[slot], func(s gearStatus) bool { return !s.Merc })})
 		}
+
+		sections = append(sections, webSection{Label: "merc weapon", Items: mercMain})
+		sections = append(sections, webSection{Label: "merc offhand", Items: mercOffhand})
+		sections = append(sections, webSection{Label: "merc helm", Items: mercHelm})
+		sections = append(sections, webSection{Label: "merc armor", Items: mercArmor})
 	}
 
 	mandatory := readMandatoryRequirements(data)
@@ -1074,6 +1408,59 @@ func buildCharacterDetailData(slug string) (webDetailData, error) {
 		Sections:      sections,
 		Runes:         buildRuneNeeds(data),
 	}, nil
+}
+
+func splitMercWeaponSlots(items []webGearItem) (main []webGearItem, offhand []webGearItem) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	mainCandidates := make([]webGearItem, 0, len(items))
+	offhandCandidates := make([]webGearItem, 0, len(items))
+	for _, item := range items {
+		if normalizeSwapRole(item.Status.SwapRole) == "offhand" {
+			offhandCandidates = append(offhandCandidates, item)
+			continue
+		}
+		mainCandidates = append(mainCandidates, item)
+	}
+
+	if len(mainCandidates) > 0 {
+		main = []webGearItem{mainCandidates[0]}
+	}
+
+	if len(offhandCandidates) > 0 {
+		offhand = []webGearItem{offhandCandidates[0]}
+	} else if len(mainCandidates) > 1 {
+		offhand = []webGearItem{mainCandidates[1]}
+	}
+
+	return main, offhand
+}
+
+func applyMercEtherealIfIndestructible(entry map[string]any) {
+	if strings.ToLower(strings.TrimSpace(stringValue(entry["kind"]))) != "runeword" {
+		return
+	}
+
+	indestructible := hasRune(stringSliceValue(entry["runes"]), "zod")
+	if !indestructible {
+		for _, effect := range stringSliceValue(entry["effects"]) {
+			if strings.Contains(strings.ToLower(effect), "indestruct") {
+				indestructible = true
+				break
+			}
+		}
+	}
+	if !indestructible {
+		return
+	}
+
+	bases := stringSliceValue(entry["possible_bases"])
+	details := baseDetailsSliceValue(entry["possible_bases_details"])
+	bases, details = appendEtherealVariants(bases, details)
+	entry["possible_bases"] = bases
+	entry["possible_bases_details"] = details
 }
 
 func filterWebItems(items []webGearItem, keep func(gearStatus) bool) []webGearItem {
@@ -1136,15 +1523,6 @@ func buildRuneNeeds(data map[string]any) []webRuneNeed {
 		}
 	}
 
-	sort.Slice(order, func(i, j int) bool {
-		left := runeDifficultyOrder(order[i])
-		right := runeDifficultyOrder(order[j])
-		if left == right {
-			return order[i] < order[j]
-		}
-		return left < right
-	})
-
 	out := make([]webRuneNeed, 0, len(order))
 	for _, runeName := range order {
 		count := counts[runeName]
@@ -1162,6 +1540,18 @@ func buildRuneNeeds(data map[string]any) []webRuneNeed {
 			CountessText: minDifficulty,
 		})
 	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Complete != out[j].Complete {
+			return !out[i].Complete
+		}
+		left := runeDifficultyOrder(out[i].Name)
+		right := runeDifficultyOrder(out[j].Name)
+		if left == right {
+			return out[i].Name < out[j].Name
+		}
+		return left < right
+	})
 
 	return out
 }

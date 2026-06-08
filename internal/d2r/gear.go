@@ -2,19 +2,26 @@ package d2r
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 )
 
-var supportedGearSlots = []string{"weapon", "head", "armor", "belt", "ring", "amulet", "inventory"}
+var supportedGearSlots = []string{"weapon", "helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory", "merc_weapon", "merc_helm", "merc_armor"}
 
 type gearBuckets struct {
-	Weapon    []map[string]any `yaml:"weapon"`
-	Head      []map[string]any `yaml:"head"`
-	Armor     []map[string]any `yaml:"armor"`
-	Belt      []map[string]any `yaml:"belt"`
-	Ring      []map[string]any `yaml:"ring"`
-	Amulet    []map[string]any `yaml:"amulet"`
-	Inventory []map[string]any `yaml:"inventory"`
+	Weapon     []map[string]any `yaml:"weapon"`
+	Helm       []map[string]any `yaml:"helm"`
+	Armor      []map[string]any `yaml:"armor"`
+	Gloves     []map[string]any `yaml:"gloves"`
+	Boots      []map[string]any `yaml:"boots"`
+	Belt       []map[string]any `yaml:"belt"`
+	Ring       []map[string]any `yaml:"ring"`
+	Amulet     []map[string]any `yaml:"amulet"`
+	Inventory  []map[string]any `yaml:"inventory"`
+	MercWeapon []map[string]any `yaml:"merc_weapon"`
+	MercHelm   []map[string]any `yaml:"merc_helm"`
+	MercArmor  []map[string]any `yaml:"merc_armor"`
 }
 
 type gearStatus struct {
@@ -23,12 +30,14 @@ type gearStatus struct {
 	Slot      string
 	Kind      string
 	SwapRole  string
+	Note      string
 	Runes     []string
 	Bases     []string
 	BaseInfo  []gearBaseInfo
 	BestBases []string
 	Effects   []string
 	IsSwap    bool
+	Merc      bool
 	Known     bool
 	Needed    bool
 	Prio      bool
@@ -39,7 +48,9 @@ type gearBaseInfo struct {
 	BaseClass   string
 	Hand        string
 	Defense     string
+	DefenseAvg  string
 	Damage      string
+	DamageAvg   string
 	WeaponSpeed string
 }
 
@@ -119,13 +130,18 @@ func setGearEntries(data map[string]any, entries []map[string]any) {
 		bySlot[slot] = append(bySlot[slot], entry)
 	}
 	data["gear"] = gearBuckets{
-		Weapon:    bySlot["weapon"],
-		Head:      bySlot["head"],
-		Armor:     bySlot["armor"],
-		Belt:      bySlot["belt"],
-		Ring:      bySlot["ring"],
-		Amulet:    bySlot["amulet"],
-		Inventory: bySlot["inventory"],
+		Weapon:     bySlot["weapon"],
+		Helm:       bySlot["helm"],
+		Armor:      bySlot["armor"],
+		Gloves:     bySlot["gloves"],
+		Boots:      bySlot["boots"],
+		Belt:       bySlot["belt"],
+		Ring:       bySlot["ring"],
+		Amulet:     bySlot["amulet"],
+		Inventory:  bySlot["inventory"],
+		MercWeapon: bySlot["merc_weapon"],
+		MercHelm:   bySlot["merc_helm"],
+		MercArmor:  bySlot["merc_armor"],
 	}
 }
 
@@ -171,6 +187,9 @@ func normalizeSlotName(raw string) string {
 	if value == "weapon_swap" {
 		return "weapon"
 	}
+	if value == "merc_weapon" || value == "merc_helm" || value == "merc_armor" {
+		return value
+	}
 	for _, slot := range supportedGearSlots {
 		if value == slot {
 			return slot
@@ -183,6 +202,22 @@ func normalizeSlotName(raw string) string {
 }
 
 func slotForEntry(entry map[string]any) string {
+	if isMercEntry(entry) {
+		slot := normalizeSlotName(stringValue(entry["slot"]))
+		switch slot {
+		case "weapon", "merc_weapon":
+			return "merc_weapon"
+		case "helm", "merc_helm":
+			return "merc_helm"
+		case "armor", "merc_armor":
+			return "merc_armor"
+		default:
+			if slot == "" {
+				return "inventory"
+			}
+			return slot
+		}
+	}
 	if isWeaponSwap(entry) {
 		return "weapon"
 	}
@@ -255,8 +290,12 @@ func normalizeResolvedSlotAndRole(entry map[string]any) {
 	case "offhand", "off_hand", "shield", "shields":
 		entry["slot"] = "weapon"
 		entry["swap_role"] = "offhand"
-	case "head", "helm", "helmet":
-		entry["slot"] = "head"
+	case "helm", "helmet":
+		entry["slot"] = "helm"
+	case "gloves", "glove", "gauntlets", "gauntlet", "bracers", "vambraces":
+		entry["slot"] = "gloves"
+	case "boots", "boot", "greaves":
+		entry["slot"] = "boots"
 	case "armor", "body_armor", "bodyarmor", "chest", "breast":
 		entry["slot"] = "armor"
 	case "weapon", "melee_weapon", "missile_weapon", "bow", "crossbow", "amazon_bow":
@@ -296,7 +335,7 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 	for _, entry := range entries {
 		slot := slotForEntry(entry)
 		if gearFound(entry) {
-			foundBySlot[slot]++
+			foundBySlot[slotRequirementKey(slot)]++
 		}
 	}
 
@@ -304,10 +343,13 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 
 	for _, entry := range entries {
 		slot := slotForEntry(entry)
+		merc := isMercEntry(entry)
 		found := gearFound(entry)
 		needed := !found
+		required := requiredSlotCount(slot)
+		slotKey := slotRequirementKey(slot)
 		if slot != "unknown" {
-			needed = !found && foundBySlot[slot] < requiredSlotCount(slot)
+			needed = !found && foundBySlot[slotKey] < required
 		}
 
 		prio := false
@@ -318,7 +360,7 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 			case slot == "unknown":
 				prio = false
 			default:
-				prio = foundBySlot[slot] < requiredSlotCount(slot)
+				prio = foundBySlot[slotKey] < required
 			}
 		}
 
@@ -327,10 +369,12 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 			Slot:      slot,
 			Kind:      gearKind(entry),
 			SwapRole:  swapRoleValue(entry),
+			Note:      stringValue(entry["user_note"]),
 			Runes:     stringSliceValue(entry["runes"]),
 			Bases:     stringSliceValue(entry["possible_bases"]),
 			BaseInfo:  baseInfoValue(entry),
 			BestBases: bestBasesValue(entry), Effects: stringSliceValue(entry["effects"]), IsSwap: isWeaponSwap(entry),
+			Merc:   merc,
 			Known:  found,
 			Needed: needed,
 			Prio:   prio,
@@ -340,10 +384,36 @@ func buildGearStatuses(entries []map[string]any) []gearStatus {
 }
 
 func requiredSlotCount(slot string) int {
+	if slot == "merc_weapon" {
+		return 2
+	}
+	if slot == "merc_helm" || slot == "merc_armor" {
+		return 1
+	}
 	if slot == "ring" {
 		return 2
 	}
 	return 1
+}
+
+func slotRequirementKey(slot string) string {
+	return slot
+}
+
+func isMercEntry(entry map[string]any) bool {
+	v, ok := entry["merc"]
+	if !ok || v == nil {
+		slot := normalizeSlotName(stringValue(entry["slot"]))
+		return slot == "merc_weapon" || slot == "merc_helm" || slot == "merc_armor"
+	}
+	switch typed := v.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return strings.EqualFold(strings.TrimSpace(fmt.Sprint(v)), "true")
+	}
 }
 
 func hasCompletedWeaponSwapOption(entries []map[string]any) bool {
@@ -432,17 +502,48 @@ func baseInfoValue(entry map[string]any) []gearBaseInfo {
 			WeaponSpeed: stringValue(m["weapon_speed"]),
 		})
 		last := &out[len(out)-1]
+		if cat, ok := d2rBaseCatalog[normalizeGearLookup(stripEtherealPrefix(last.Name))]; ok {
+			if last.BaseClass == "other" {
+				last.BaseClass = normalizeBaseClass(cat.BaseClass)
+			}
+			if strings.TrimSpace(last.Hand) == "" {
+				last.Hand = strings.ToLower(strings.TrimSpace(cat.Hand))
+			}
+			if strings.TrimSpace(last.Defense) == "" {
+				last.Defense = strings.TrimSpace(cat.Defense)
+			}
+			if strings.TrimSpace(last.Damage) == "" {
+				last.Damage = strings.TrimSpace(cat.Damage)
+			}
+			if strings.TrimSpace(last.WeaponSpeed) == "" {
+				last.WeaponSpeed = strings.TrimSpace(cat.WeaponSpeed)
+			}
+			if isEtherealName(last.Name) {
+				last.Defense = scaleRangeByHalf(last.Defense)
+				last.Damage = scaleRangeByHalf(last.Damage)
+			}
+		}
+		if avg, ok := averageDefense(last.Defense); ok {
+			last.DefenseAvg = formatAvgValue(avg)
+		}
+		if avg, ok := averageDamage(last.Damage); ok {
+			last.DamageAvg = formatAvgValue(avg)
+		}
 		if last.BaseClass == "melee_weapon" || last.BaseClass == "missile_weapon" {
 			last.Defense = ""
+			last.DefenseAvg = ""
 			if last.WeaponSpeed == "" {
 				last.WeaponSpeed = "?"
 			}
+		} else {
+			last.DamageAvg = ""
 		}
 	}
 
 	if len(out) == 0 {
 		return fallbackBaseInfo(stringSliceValue(entry["possible_bases"]))
 	}
+	sortBasesByPower(out)
 	return out
 }
 
@@ -456,9 +557,127 @@ func fallbackBaseInfo(bases []string) []gearBaseInfo {
 		if trimmed == "" {
 			continue
 		}
-		out = append(out, gearBaseInfo{Name: trimmed})
+		info := gearBaseInfo{Name: trimmed}
+		lookup := normalizeGearLookup(stripEtherealPrefix(trimmed))
+		if cat, ok := d2rBaseCatalog[lookup]; ok {
+			info.BaseClass = normalizeBaseClass(cat.BaseClass)
+			info.Hand = strings.ToLower(strings.TrimSpace(cat.Hand))
+			if info.Hand == "" {
+				info.Hand = "n/a"
+			}
+			info.Defense = strings.TrimSpace(cat.Defense)
+			info.Damage = strings.TrimSpace(cat.Damage)
+			info.WeaponSpeed = strings.TrimSpace(cat.WeaponSpeed)
+
+			if isEtherealName(trimmed) {
+				info.Defense = scaleRangeByHalf(info.Defense)
+				info.Damage = scaleRangeByHalf(info.Damage)
+			}
+
+			if avg, ok := averageDefense(info.Defense); ok {
+				info.DefenseAvg = formatAvgValue(avg)
+			}
+			if avg, ok := averageDamage(info.Damage); ok {
+				info.DamageAvg = formatAvgValue(avg)
+			}
+
+			if info.BaseClass == "melee_weapon" || info.BaseClass == "missile_weapon" {
+				info.Defense = ""
+				info.DefenseAvg = ""
+				if info.WeaponSpeed == "" {
+					info.WeaponSpeed = "?"
+				}
+			} else {
+				info.DamageAvg = ""
+			}
+		}
+		out = append(out, info)
 	}
+	sortBasesByPower(out)
 	return out
+}
+
+func sortBasesByPower(items []gearBaseInfo) {
+	if len(items) < 2 {
+		return
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		isWeaponI := items[i].BaseClass == "melee_weapon" || items[i].BaseClass == "missile_weapon"
+		isWeaponJ := items[j].BaseClass == "melee_weapon" || items[j].BaseClass == "missile_weapon"
+		if isWeaponI != isWeaponJ {
+			return isWeaponI
+		}
+
+		if isWeaponI {
+			ai, okI := averageDamage(items[i].Damage)
+			aj, okJ := averageDamage(items[j].Damage)
+			if okI != okJ {
+				return okI
+			}
+			if okI && ai != aj {
+				return ai > aj
+			}
+		} else {
+			di, okI := averageDefense(items[i].Defense)
+			dj, okJ := averageDefense(items[j].Defense)
+			if okI != okJ {
+				return okI
+			}
+			if okI && di != dj {
+				return di > dj
+			}
+		}
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+}
+
+func averageDamage(raw string) (float64, bool) {
+	v := strings.TrimSpace(strings.ToLower(raw))
+	if v == "" || v == "n/a" || v == "varies" || strings.Contains(v, "unknown") {
+		return 0, false
+	}
+
+	nums := make([]int, 0, 2)
+	current := 0
+	inNumber := false
+	for _, r := range v {
+		if r >= '0' && r <= '9' {
+			current = current*10 + int(r-'0')
+			inNumber = true
+			continue
+		}
+		if inNumber {
+			nums = append(nums, current)
+			current = 0
+			inNumber = false
+		}
+	}
+	if inNumber {
+		nums = append(nums, current)
+	}
+
+	if len(nums) == 0 {
+		return 0, false
+	}
+	if len(nums) == 1 {
+		return float64(nums[0]), true
+	}
+	return float64(nums[0]+nums[1]) / 2.0, true
+}
+
+func averageDefense(raw string) (float64, bool) {
+	return averageDamage(raw)
+}
+
+func formatAvgValue(v float64) string {
+	// D2-style display: integer with half-up rounding.
+	return fmt.Sprintf("%d", int(math.Round(v)))
+}
+
+func isEtherealName(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(v, "ethereal ") || strings.HasPrefix(v, "eth ")
 }
 
 func filterStatuses(items []gearStatus, keep func(gearStatus) bool) []gearStatus {

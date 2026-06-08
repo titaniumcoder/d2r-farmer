@@ -1,0 +1,40 @@
+{{define "settings-page"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings · D2R Farmer</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="bg-orb bg-orb-a"></div>
+  <div class="bg-orb bg-orb-b"></div>
+  <main class="settings-shell">
+    <header class="settings-header">
+      <h1>Settings</h1>
+      <a class="settings-link" href="/">Back to Characters</a>
+    </header>
+
+    <form class="settings-form" method="post" action="/settings/save">
+      {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+      {{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+
+      <label for="api_key">OpenAI API Key</label>
+      <input id="api_key" type="password" name="api_key" value="{{.APIKey}}" autocomplete="off" required>
+
+      <label for="model">Model</label>
+      <select id="model" name="model" required>
+        {{range .Models}}
+        <option value="{{.ID}}" {{if eq $.SelectedModel .ID}}selected{{end}}>
+          {{if .Pricing}}{{.ID}} - {{.Pricing}}{{else}}{{.ID}}{{end}}
+        </option>
+        {{end}}
+      </select>
+
+      <button type="submit">Save Settings</button>
+    </form>
+  </main>
+</body>
+</html>
+{{end}}

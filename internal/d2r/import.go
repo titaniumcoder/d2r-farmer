@@ -103,19 +103,10 @@ func importGuideForCharacter(character string, url string, progressf func(string
 		if updatef != nil {
 			updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
 		}
-		if findGearEntryIndex(gearList, name) >= 0 {
-			skipped++
-			logf("skip %d/%d: duplicate item=%q already present\n", idx+1, total, name)
-			if updatef != nil {
-				updatef(importProgressUpdate{Current: idx + 1, Total: total, Item: name, Imported: imported, Skipped: skipped})
-			}
-			continue
-		}
+		slotHint, weaponSwap, swapRole, merc := mapGuideSlot(item.Slot)
+		logf("resolve hint %d/%d: item=%q slot_hint=%q weapon_swap=%t swap_role=%q merc=%t\n", idx+1, total, name, slotHint, weaponSwap, swapRole, merc)
 
-		slotHint, weaponSwap, swapRole := mapGuideSlot(item.Slot)
-		logf("resolve hint %d/%d: item=%q slot_hint=%q weapon_swap=%t swap_role=%q\n", idx+1, total, name, slotHint, weaponSwap, swapRole)
-
-		entry, err := resolveGearWithLLM(name, charClass, slotHint, cfg)
+		entry, err := resolveGearWithLLM(name, charClass, "", cfg)
 		if err != nil {
 			if isTimeoutError(err) {
 				timeoutSkips++
@@ -139,12 +130,20 @@ func importGuideForCharacter(character string, url string, progressf func(string
 		if stringValue(entry["query"]) == "" {
 			entry["query"] = name
 		}
-		if slotHint != "" {
-			entry["slot"] = slotHint
-		} else {
-			normalizeResolvedSlotAndRole(entry)
+		normalizeResolvedSlotAndRole(entry)
+
+		if slotHint != "" && slotHint != "unknown" {
+			switch slotHint {
+			case "weapon":
+				entry["slot"] = "weapon"
+				entry["swap_role"] = normalizeSwapRole(swapRole)
+			case "helm", "armor", "gloves", "boots", "belt", "ring", "amulet", "inventory":
+				entry["slot"] = slotHint
+				delete(entry, "swap_role")
+				entry["weapon_swap"] = false
+			}
 		}
-		if !weaponSwap && slotHint == "weapon" && normalizeSwapRole(swapRole) == "offhand" {
+		if !weaponSwap && stringValue(entry["slot"]) == "weapon" && normalizeSwapRole(swapRole) == "offhand" {
 			entry["swap_role"] = "offhand"
 		}
 		if weaponSwap {
@@ -152,10 +151,30 @@ func importGuideForCharacter(character string, url string, progressf func(string
 			entry["slot"] = "weapon"
 			entry["swap_role"] = normalizeSwapRole(swapRole)
 		}
+		if merc {
+			entry["merc"] = true
+			applyMercEtherealIfIndestructible(entry)
+		}
 
-		gearList = append(gearList, entry)
-		imported++
-		logf("imported %d/%d: item=%q kind=%q slot=%q\n", idx+1, total, stringValue(entry["exact_name"]), stringValue(entry["kind"]), stringValue(entry["slot"]))
+		entries := cloneEntryForPossibleSlots(entry)
+		if slotHint != "" && slotHint != "unknown" {
+			entries = nil // Guide explicitly provided the slot placement; do not fan out.
+		}
+		if len(entries) == 0 {
+			entries = []map[string]any{entry}
+		}
+
+		addedThisItem := 0
+		for _, expanded := range entries {
+			if merc {
+				expanded["merc"] = true
+			}
+			gearList = append(gearList, expanded)
+			addedThisItem++
+		}
+
+		imported += addedThisItem
+		logf("imported %d/%d: item=%q added=%d kind=%q slot=%q merc=%t\n", idx+1, total, stringValue(entry["exact_name"]), addedThisItem, stringValue(entry["kind"]), stringValue(entry["slot"]), merc)
 
 		// Persist after each successful add so the UI can reflect live progress.
 		setGearEntries(data, gearList)
@@ -196,40 +215,47 @@ func isTimeoutError(err error) bool {
 	return strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout")
 }
 
-func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string) {
+func mapGuideSlot(raw string) (slot string, weaponSwap bool, swapRole string, merc bool) {
 	value := strings.ToLower(strings.TrimSpace(raw))
+	mercSection := strings.Contains(value, "merc") || strings.Contains(value, "hireling")
 
 	if strings.Contains(value, "weapon-swap") || strings.Contains(value, "swap") {
 		if strings.Contains(value, "off-hand") || strings.Contains(value, "off hand") {
-			return "weapon", true, "offhand"
+			return "weapon", true, "offhand", mercSection
 		}
-		return "weapon", true, "main"
+		return "weapon", true, "main", mercSection
 	}
 	if strings.Contains(value, "off-hand") || strings.Contains(value, "off hand") {
-		return "weapon", false, "offhand"
+		return "weapon", false, "offhand", mercSection
 	}
 	if strings.Contains(value, "weapon") {
-		return "weapon", false, "main"
+		return "weapon", false, "main", mercSection
 	}
 	if strings.Contains(value, "helmet") || strings.Contains(value, "helm") {
-		return "head", false, "main"
+		return "helm", false, "main", mercSection
 	}
 	if strings.Contains(value, "body armor") || strings.Contains(value, "armor") {
-		return "armor", false, "main"
+		return "armor", false, "main", mercSection
+	}
+	if strings.Contains(value, "glove") || strings.Contains(value, "gauntlet") || strings.Contains(value, "bracer") || strings.Contains(value, "vambrace") {
+		return "gloves", false, "main", false
+	}
+	if strings.Contains(value, "boot") || strings.Contains(value, "greaves") {
+		return "boots", false, "main", false
 	}
 	if strings.Contains(value, "belt") {
-		return "belt", false, "main"
+		return "belt", false, "main", false
 	}
 	if strings.Contains(value, "ring") {
-		return "ring", false, "main"
+		return "ring", false, "main", false
 	}
 	if strings.Contains(value, "amulet") {
-		return "amulet", false, "main"
+		return "amulet", false, "main", false
 	}
 	if strings.Contains(value, "charm") || strings.Contains(value, "inventory") {
-		return "inventory", false, "main"
+		return "inventory", false, "main", false
 	}
-	return "inventory", false, "main"
+	return "unknown", false, "main", false
 }
 
 func extractGuideGearFromURL(url string, cfg Config) ([]guideGearItem, error) {
@@ -312,11 +338,12 @@ func extractGuideGearOpenAI(url string, pageText string, cfg OpenAIConfig) ([]gu
 
 	systemPrompt := strings.TrimSpace(`You extract Diablo II gear options from guide page text.
 Return strict JSON only.
-Extract only the Gear Options section items.
-Ignore stats, skills, mercenary, farming spots, and explanatory prose.
+Extract items from the build's gear sections, including both player gear and Mercenary gear sections.
+If a guide has a dedicated Mercenary section, include those items with slot labels that preserve merc context (e.g. "Mercenary Weapon", "Mercenary Helm", "Mercenary Armor").
+Ignore stats, skills, farming spots, and explanatory prose.
 Return slot labels and item names.`)
 
-	userPrompt := fmt.Sprintf("URL: %s\nPage text:\n%s\n\nReturn JSON with items: [{slot,item}] from Gear Options only.", url, pageText)
+	userPrompt := fmt.Sprintf("URL: %s\nPage text:\n%s\n\nReturn JSON with items: [{slot,item}] from gear sections, including Mercenary gear sections when present.", url, pageText)
 
 	schema := map[string]any{
 		"type": "object",

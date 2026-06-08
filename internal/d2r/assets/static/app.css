@@ -105,6 +105,13 @@ h4 {
   overflow-y: auto;
 }
 
+.char-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  align-items: stretch;
+}
+
 .char-item {
   all: unset;
   cursor: pointer;
@@ -135,6 +142,60 @@ h4 {
 .char-class {
   font-size: 0.84rem;
   color: var(--ink-soft);
+}
+
+.char-delete-form {
+  display: inline-flex;
+}
+
+.char-delete-btn {
+  min-width: 1.9rem;
+  padding: 0.2rem 0.45rem;
+}
+
+.settings-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.settings-link:hover {
+  text-decoration: underline;
+}
+
+.settings-shell {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.settings-form {
+  background: color-mix(in srgb, var(--surface), white 30%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 10px 35px rgba(90, 54, 30, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 1rem;
+}
+
+.settings-form label {
+  font-weight: 600;
+}
+
+.notice {
+  margin: 0;
+  color: var(--ok);
 }
 
 .new-character-form,
@@ -534,6 +595,8 @@ button:disabled {
 
 .gear-list {
   list-style: none;
+  min-height: 2.4rem;
+  padding: 0;
 }
 
 .gear-summary-left {
@@ -555,6 +618,28 @@ button:disabled {
 .gear-item-row.drag-over .gear-card {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), white 72%);
+}
+
+.gear-item-row.drag-over-before {
+  border-top: 2px solid var(--accent);
+}
+
+.gear-item-row.drag-over-after {
+  border-bottom: 2px solid var(--accent);
+}
+
+.gear-list.drag-over-empty {
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface), white 15%);
+}
+
+.gear-drop-placeholder {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  padding: 0.45rem 0.55rem;
 }
 
 .inline-action {
@@ -588,4 +673,51 @@ button:disabled {
   content: "✦ ";
   color: var(--accent-soft);
   font-size: 0.7rem;
+}
+
+.note-block {
+  width: 100%;
+}
+
+.note-display {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.note-display:empty {
+  display: none;
+}
+
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  display: none;
+}
+
+.note-block.is-editing .note-display {
+  display: none;
+}
+
+.note-block.is-editing .note-editor {
+  display: flex;
+}
+
+.note-editor textarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  min-height: 3.3rem;
+  line-height: 1.35;
+}
+
+.note-actions {
+  display: inline-flex;
+  gap: 0.35rem;
 }

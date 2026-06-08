@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>d2r farmer</title>
+  <title>{{if .Detail}}{{.Detail.CharacterName}}{{else}}Characters{{end}} · D2R Farmer</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
@@ -94,9 +94,73 @@
         });
       }
 
+      function syncDocumentTitle(scope) {
+        var detailTitle = '';
+        if (scope) {
+          var heading = scope.querySelector('.title-block h2');
+          if (heading) {
+            detailTitle = (heading.textContent || '').trim();
+          }
+        }
+        if (!detailTitle) {
+          document.title = 'd2r farmer - characters';
+          return;
+        }
+        document.title = 'd2r farmer - ' + detailTitle;
+      }
+
       function initGearDnD(root) {
         var scope = root || document;
         var lists = scope.querySelectorAll('.gear-list');
+
+        function clearDragMarkers(list) {
+          list.classList.remove('drag-over-empty');
+          list.querySelectorAll('.gear-item-row.drag-over-before, .gear-item-row.drag-over-after').forEach(function (el) {
+            el.classList.remove('drag-over-before', 'drag-over-after');
+          });
+        }
+
+        function activeRows(list, sourceKey) {
+          return Array.from(list.querySelectorAll('.gear-item-row')).filter(function (row) {
+            if (!row.dataset || !row.dataset.gearKey) return false;
+            if (sourceKey && row.dataset.gearKey === sourceKey) return false;
+            return true;
+          });
+        }
+
+        function dropTargetFor(list, event, sourceKey) {
+          var rows = activeRows(list, sourceKey);
+          if (!rows.length) {
+            return { row: null, position: 'end' };
+          }
+
+          var hovered = event.target.closest('.gear-item-row');
+          if (hovered && hovered.dataset && hovered.dataset.gearKey && hovered.dataset.gearKey !== sourceKey) {
+            var hoveredRect = hovered.getBoundingClientRect();
+            var hoveredBefore = event.clientY < hoveredRect.top + (hoveredRect.height / 2);
+            return { row: hovered, position: hoveredBefore ? 'before' : 'after' };
+          }
+
+          var first = rows[0].getBoundingClientRect();
+          if (event.clientY < first.top) {
+            return { row: rows[0], position: 'before' };
+          }
+          var last = rows[rows.length - 1].getBoundingClientRect();
+          if (event.clientY > last.bottom) {
+            return { row: rows[rows.length - 1], position: 'after' };
+          }
+
+          for (var i = 0; i < rows.length; i++) {
+            var rect = rows[i].getBoundingClientRect();
+            if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
+              var before = event.clientY < rect.top + (rect.height / 2);
+              return { row: rows[i], position: before ? 'before' : 'after' };
+            }
+          }
+
+          return { row: rows[rows.length - 1], position: 'after' };
+        }
+
         lists.forEach(function (list) {
           if (list.dataset.dndBound === '1') {
             return;
@@ -113,33 +177,38 @@
           list.addEventListener('dragover', function (event) {
             event.preventDefault();
             event.dataTransfer.dropEffect = 'move';
-            var row = event.target.closest('.gear-item-row');
-            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
-              el.classList.remove('drag-over');
-            });
-            if (row) {
-              row.classList.add('drag-over');
+
+            var sourceKey = event.dataTransfer.getData('text/plain');
+            var target = dropTargetFor(list, event, sourceKey);
+            clearDragMarkers(list);
+
+            if (target.row) {
+              target.row.classList.add(target.position === 'before' ? 'drag-over-before' : 'drag-over-after');
+            } else {
+              list.classList.add('drag-over-empty');
             }
           });
 
-          list.addEventListener('dragleave', function () {
-            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
-              el.classList.remove('drag-over');
-            });
+          list.addEventListener('dragleave', function (event) {
+            if (event.relatedTarget && list.contains(event.relatedTarget)) {
+              return;
+            }
+            clearDragMarkers(list);
           });
 
           list.addEventListener('drop', function (event) {
             event.preventDefault();
             var sourceKey = event.dataTransfer.getData('text/plain');
-            var targetRow = event.target.closest('.gear-item-row');
-            if (!sourceKey || !targetRow) return;
+            if (!sourceKey) return;
 
-            var targetKey = targetRow.dataset.gearKey || '';
-            if (!targetKey || sourceKey === targetKey) return;
+            var target = dropTargetFor(list, event, sourceKey);
+            clearDragMarkers(list);
 
-            list.querySelectorAll('.gear-item-row.drag-over').forEach(function (el) {
-              el.classList.remove('drag-over');
-            });
+            var targetKey = target.row ? (target.row.dataset.gearKey || '') : '';
+            var position = target.position || 'end';
+            if (targetKey && sourceKey === targetKey) {
+              return;
+            }
 
             var reorderUrl = list.dataset.reorderUrl;
             if (!reorderUrl) return;
@@ -149,7 +218,9 @@
               swap: 'innerHTML',
               values: {
                 source_key: sourceKey,
-                target_key: targetKey
+                target_key: targetKey,
+                position: position,
+                target_section: list.dataset.sectionLabel || ''
               }
             });
           });
@@ -168,6 +239,7 @@
           }
         }
         syncActiveCharacter(initialSlug);
+        syncDocumentTitle(detailView);
       });
 
       document.body.addEventListener('htmx:beforeSwap', function (event) {
@@ -195,6 +267,7 @@
           restoreDetailState(target);
           captureDetailState(target);
           syncActiveCharacter(getDetailSlug(target));
+          syncDocumentTitle(target);
           if (pendingWindowScrollY !== null) {
             var y = pendingWindowScrollY;
             pendingWindowScrollY = null;
@@ -213,22 +286,35 @@
 {{define "character-list"}}
 <div id="character-list" class="character-list-wrap">
   <h1>Characters</h1>
+  <a class="settings-link" href="/settings">Settings</a>
 
   <nav class="character-list">
     {{if .Characters}}
       {{range .Characters}}
-      <a
-        href="/{{.Slug}}"
-        class="char-item{{if eq $.ActiveSlug .Slug}} is-active{{end}}"
-        data-slug="{{.Slug}}"
-        hx-get="/characters/{{.Slug}}"
-        hx-push-url="/{{.Slug}}"
-        hx-target="#detail-view"
-        hx-swap="innerHTML"
-      >
-        <span class="char-name">{{.Name}}</span>
-        <span class="char-class">{{.Class}}</span>
-      </a>
+      <div class="char-row">
+        <a
+          href="/{{.Slug}}"
+          class="char-item{{if eq $.ActiveSlug .Slug}} is-active{{end}}"
+          data-slug="{{.Slug}}"
+          hx-get="/characters/{{.Slug}}"
+          hx-push-url="/{{.Slug}}"
+          hx-target="#detail-view"
+          hx-swap="innerHTML"
+        >
+          <span class="char-name">{{.Name}}</span>
+          <span class="char-class">{{.Class}}</span>
+        </a>
+        <form
+          class="char-delete-form"
+          method="post"
+          hx-post="/characters/{{.Slug}}/delete"
+          hx-target="#character-list"
+          hx-swap="outerHTML"
+          hx-confirm="Delete {{.Name}}?"
+        >
+          <button type="submit" class="mini-btn danger char-delete-btn" aria-label="delete {{.Name}}">x</button>
+        </form>
+      </div>
       {{end}}
     {{else}}
       <p class="muted">No characters yet.</p>
@@ -254,6 +340,7 @@
       <option value="necromancer">necromancer</option>
       <option value="paladin">paladin</option>
       <option value="sorceress">sorceress</option>
+      <option value="warlock">warlock</option>
     </select>
     <button type="submit">create</button>
   </form>
